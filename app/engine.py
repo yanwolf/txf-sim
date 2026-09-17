@@ -96,15 +96,20 @@ class Engine:
                          if len(x.code) == len(CONTRACT_CODE) + 2 and digits(x.delivery_date) >= today]
                 c = sorted(cands, key=lambda x: digits(x.delivery_date))[0]
             self.contract = c
+            g = lambda k, d=None: getattr(c, k, d)
+            num = lambda v: float(v) if v not in (None, "", 0) else None
             with STATE.lock:
                 STATE.contract = {
-                    "code": c.code, "symbol": c.symbol, "name": c.name,
-                    "delivery_date": str(c.delivery_date),
-                    "reference": float(c.reference) if c.reference else None,
-                    "limit_up": float(c.limit_up) if c.limit_up else None,
-                    "limit_down": float(c.limit_down) if c.limit_down else None,
+                    "code": g("code"), "symbol": g("symbol", g("code")), "name": g("name", ""),
+                    "delivery_date": str(g("delivery_date", "")),
+                    "last_trading_date": str(g("last_trading_date", "")),
+                    "reference": num(g("reference")),
+                    "limit_up": num(g("limit_up")),
+                    "limit_down": num(g("limit_down")),
                 }
-            STATE.log("INFO", f"合約：{c.code} {c.name} 結算日 {c.delivery_date}")
+                if STATE.contract["reference"]:
+                    STATE.prev_close = STATE.contract["reference"]
+            STATE.log("INFO", f"合約：{g('code')} {g('name', '')} 結算日 {g('delivery_date', '')}")
         except Exception as e:
             self.contract = None
             STATE.log("ERROR", f"找不到合約 {CONTRACT_CODE}R1：{e!r}（合約檔可能尚未下載完成）")
@@ -124,7 +129,7 @@ class Engine:
                 STATE.bars.extend(bars)
                 STATE.warmup_bars = len(bars)
                 STATE.warmup_error = None
-                if bars:
+                if bars and not STATE.prev_close:
                     STATE.prev_close = bars[-1]["close"]
             STATE.log("INFO", f"暖機回補 1 分 K {len(bars)} 根（{start} ~ {end}）")
         except Exception as e:
