@@ -121,7 +121,9 @@ class Engine:
             k = self.api.kbars(self.contract, start=start.isoformat(), end=end.isoformat())
             bars = []
             for ts, o, h, l, c, v in zip(k.ts, k.Open, k.High, k.Low, k.Close, k.Volume):
-                dt = datetime.fromtimestamp(ts / 1e9, TZ)
+                # Shioaji 的 ts 已是台北時間（以 UTC 形式存），且標的是該分鐘的「結束」時間
+                # 轉成跟即時 K 一致的「起始分鐘」標籤
+                dt = datetime.utcfromtimestamp(ts / 1e9) - timedelta(minutes=1)
                 bars.append({"ts": dt.strftime("%Y-%m-%d %H:%M"), "open": float(o), "high": float(h),
                              "low": float(l), "close": float(c), "volume": int(v), "src": "hist"})
             with STATE.lock:
