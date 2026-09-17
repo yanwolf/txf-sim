@@ -4,9 +4,13 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+import base64
 import shioaji as sj
 
 from . import strategy
+from .broker import BROKER, MODE
+from .db import DB_
+from .notify import notify
 from .state import STATE, TZ, in_session, now
 
 API_KEY = os.getenv("SHIOAJI_API_KEY", "")
@@ -16,6 +20,10 @@ SIMULATION = os.getenv("SIMULATION", "true").lower() != "false"
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "3"))
 STALE_SECONDS = int(os.getenv("STALE_SECONDS", "180"))
 MIN_RELOGIN_GAP = 300  # 秒。避免重連風暴撞到每日登入次數上限
+LIVE_CONFIRM = os.getenv("LIVE_CONFIRM", "") == "YES"
+CA_PFX_BASE64 = os.getenv("CA_PFX_BASE64", "")
+CA_PASSWORD = os.getenv("CA_PASSWORD", "")
+PERSON_ID = os.getenv("PERSON_ID", "")
 
 
 class Engine:
@@ -34,13 +42,41 @@ class Engine:
         if not API_KEY or not SECRET_KEY:
             STATE.log("ERROR", "缺少 SHIOAJI_API_KEY / SHIOAJI_SECRET_KEY 環境變數")
             return
+        if MODE == "live" and (SIMULATION or not LIVE_CONFIRM):
+            STATE.log("ERROR", "MODE=live 需要 SIMULATION=false 且 LIVE_CONFIRM=YES，已拒絕啟動")
+            return
+        if MODE == "sim" and not SIMULATION:
+            STATE.log("ERROR", "MODE=sim 但 SIMULATION=false，已拒絕啟動（避免誤下實單）")
+            return
+        # DB：先連、還原狀態與 K 線
+        DB_.connect()
+        STATE.db = DB_.status()
+        if DB_.ok:
+            STATE.log("INFO", f"DB 就緒（{DB_.kind}）")
+            DB_.trim()
+            saved = DB_.load_bars(600)
+            with STATE.lock:
+                STATE.bars.extend(saved)
+            for sg in reversed(DB_.load_signals(200)):
+                STATE.signals.appendleft(sg)
+            if saved:
+                STATE.log("INFO", f"從 DB 還原 K 線 {len(saved)} 根")
+        else:
+            STATE.log("WARN", f"DB 無法使用：{DB_.error}（狀態只存記憶體）")
+        BROKER.restore()
         threading.Thread(target=self._run, daemon=True, name="engine").start()
 
     def _run(self):
-        self._connect()
+        try:
+            self._connect()
+        except BaseException as e:   # 含 Rust panic
+            STATE.log("ERROR", f"連線流程崩潰：{e!r}")
         while True:
             time.sleep(30)
-            self._watchdog()
+            try:
+                self._watchdog()
+            except BaseException as e:
+                STATE.log("ERROR", f"看門狗例外：{e!r}")
 
     def _connect(self):
         if time.time() - self._last_relogin < MIN_RELOGIN_GAP and STATE.login_count > 0:
@@ -73,14 +109,47 @@ class Engine:
                 STATE.login_ok = False
                 STATE.last_login_error = repr(e)
             STATE.log("ERROR", f"登入失敗：{e!r}")
+            notify(f"⚠️ 登入失敗：{e!r}", key="loginfail", cooldown=600)
             return
 
+        self._activate_ca()
         self._pick_contract()
         if self.contract is None:
             return
         self._warmup()
         self._subscribe()
         self._refresh_usage()
+        BROKER.attach(self.api, self._order_contract(), self._legacy)
+        notify("已登入並訂閱行情" + ("，重連" if STATE.login_count > 1 else ""), key="login", cooldown=60)
+
+    def _activate_ca(self):
+        if not CA_PFX_BASE64:
+            return
+        try:
+            path = "/tmp/ca.pfx"
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(CA_PFX_BASE64))
+            ok = self.api.activate_ca(ca_path=path, ca_passwd=CA_PASSWORD, person_id=PERSON_ID or None)
+            STATE.log("INFO", f"憑證啟用：{ok}")
+        except Exception as e:
+            STATE.log("ERROR", f"憑證啟用失敗：{e!r}")
+
+    def _order_contract(self):
+        """R1 是連續合約代號，下單要用實際月合約（如 TXFJ6）。"""
+        try:
+            group = getattr(self.api.Contracts.Futures, CONTRACT_CODE)
+            target = getattr(self.contract, "target_code", None)
+            if target:
+                c = group.get(target) if hasattr(group, "get") else getattr(group, target, None)
+                if c is not None:
+                    return c
+            digits = lambda v: "".join(ch for ch in str(v) if ch.isdigit())
+            today = digits(now().date())
+            cands = [x for x in group if len(x.code) == len(CONTRACT_CODE) + 2 and digits(x.delivery_date) >= today]
+            return sorted(cands, key=lambda x: digits(x.delivery_date))[0]
+        except Exception as e:
+            STATE.log("ERROR", f"找不到下單用月合約：{e!r}")
+            return None
 
     def _pick_contract(self):
         try:
@@ -127,12 +196,15 @@ class Engine:
                 bars.append({"ts": dt.strftime("%Y-%m-%d %H:%M"), "open": float(o), "high": float(h),
                              "low": float(l), "close": float(c), "volume": int(v), "src": "hist"})
             with STATE.lock:
+                merged = {b["ts"]: b for b in STATE.bars}
+                merged.update({b["ts"]: b for b in bars})
                 STATE.bars.clear()
-                STATE.bars.extend(bars)
+                STATE.bars.extend(sorted(merged.values(), key=lambda b: b["ts"])[-600:])
                 STATE.warmup_bars = len(bars)
                 STATE.warmup_error = None
                 if bars and not STATE.prev_close:
                     STATE.prev_close = bars[-1]["close"]
+            DB_.upsert_bars(bars[-400:])
             STATE.log("INFO", f"暖機回補 1 分 K {len(bars)} 根（{start} ~ {end}）")
         except Exception as e:
             with STATE.lock:
@@ -204,6 +276,7 @@ class Engine:
                 STATE.day_low = min(STATE.day_low, price)
                 STATE.day_volume += vol
             self._aggregate(dt, price, vol)
+            BROKER.on_tick(price)
         except Exception as e:
             STATE.log("ERROR", f"tick 處理錯誤：{e!r}")
 
@@ -228,6 +301,7 @@ class Engine:
                     STATE.bars.pop()
                 STATE.bars.append(closed)
                 bars = list(STATE.bars)
+            DB_.upsert_bar(closed)
             try:
                 strategy.on_bar_close(bars)
             except Exception as e:
@@ -235,6 +309,8 @@ class Engine:
 
     # ------------------------------------------------------------ 看門狗
     def _watchdog(self):
+        STATE.db = DB_.status()
+        BROKER.tick_watchdog()
         if not STATE.login_ok:
             STATE.log("WARN", "未登入，嘗試重連")
             self._connect()
@@ -244,6 +320,7 @@ class Engine:
         ref = max(STATE.last_tick_ts, self._login_ts)
         if in_session(now()) and STATE.subscribed and time.time() - ref > STALE_SECONDS:
             STATE.log("WARN", f"盤中 {STALE_SECONDS} 秒沒有 tick，重新連線")
+            notify(f"⚠️ 盤中 {STALE_SECONDS} 秒沒有 tick，重新連線", key="stale", cooldown=600)
             with STATE.lock:
                 STATE.subscribed = False
             self._connect()

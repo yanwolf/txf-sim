@@ -47,22 +47,41 @@ class State:
         self.signals = deque(maxlen=200)
         self.events = deque(maxlen=300)
 
-        self.position = 0             # 訊號模式下的「虛擬部位」，只用來看策略行為
-        self.position_price = None
-        self.virtual_pnl = 0.0
+        self.position = 0             # 內部認定的部位（口數，正多負空）
+        self.position_price = None    # 均價
+        self.virtual_pnl = 0.0        # 訊號模式：虛擬已實現損益（點）
+        self.realized_pnl = 0.0       # 下單模式：今日已實現損益（點/口）
+        self.broker_position = None   # 券商回報的部位
+        self.reconcile_ok = None
+        self.order_contract = None    # 實際下單用的月合約代碼
+        self.pending_order = None
+        self.kill = False
+        self.kill_reason = None
+        self.strategy_halted = None
+        self.orders = deque(maxlen=100)
+        self.db = None
 
     # ---- 寫入 ----
     def log(self, level, msg):
+        e = {"t": now().strftime("%Y-%m-%d %H:%M:%S"), "level": level, "msg": str(msg)}
         with self.lock:
-            self.events.appendleft({"t": now().strftime("%m-%d %H:%M:%S"), "level": level, "msg": str(msg)})
+            self.events.appendleft(e)
         print(f"[{level}] {msg}", flush=True)
+        try:
+            from .db import DB_
+            DB_.add_event(e)
+        except Exception:
+            pass
 
     def add_signal(self, side, price, reason):
+        s = {"t": now().strftime("%Y-%m-%d %H:%M:%S"), "side": side, "price": price, "reason": reason}
         with self.lock:
-            self.signals.appendleft({
-                "t": now().strftime("%m-%d %H:%M:%S"),
-                "side": side, "price": price, "reason": reason,
-            })
+            self.signals.appendleft(s)
+        try:
+            from .db import DB_
+            DB_.add_signal(s)
+        except Exception:
+            pass
 
     # ---- 讀取 ----
     def snapshot(self):
@@ -98,6 +117,18 @@ class State:
                 "position": self.position,
                 "position_price": self.position_price,
                 "virtual_pnl": round(self.virtual_pnl, 1),
+                "realized_pnl": round(self.realized_pnl, 1),
+                "unrealized_pnl": round((self.last_price - self.position_price) * self.position, 1)
+                    if self.position and self.position_price is not None and self.last_price is not None else 0,
+                "broker_position": self.broker_position,
+                "reconcile_ok": self.reconcile_ok,
+                "order_contract": self.order_contract,
+                "pending_order": self.pending_order,
+                "kill": self.kill,
+                "kill_reason": self.kill_reason,
+                "strategy_halted": self.strategy_halted,
+                "db": self.db,
+                "telegram": __import__("app.notify", fromlist=["enabled"]).enabled(),
                 "now": now().isoformat(timespec="seconds"),
                 "in_session": in_session(now()),
             }
@@ -113,6 +144,10 @@ class State:
     def recent_events(self):
         with self.lock:
             return list(self.events)
+
+    def recent_orders(self):
+        with self.lock:
+            return list(self.orders)
 
 
 def in_session(dt):

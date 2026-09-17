@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+from .broker import BROKER
 from .state import STATE
 
 HTML = (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
@@ -39,8 +40,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, STATE.recent_signals())
         elif u.path == "/api/events":
             self._send(200, STATE.recent_events())
+        elif u.path == "/api/orders":
+            self._send(200, STATE.recent_orders())
         else:
             self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        if u.path == "/api/kill":
+            BROKER.kill("手動")
+        elif u.path == "/api/resume":
+            BROKER.resume()
+        elif u.path == "/api/flat":
+            BROKER.flatten("手動平倉")
+        elif u.path == "/api/reconcile":
+            BROKER.reconcile()
+        else:
+            self._send(404, {"error": "not found"}); return
+        self._send(200, {"ok": True})
 
 
 def serve():

@@ -5,6 +5,7 @@
 """
 import os
 
+from .broker import BROKER
 from .state import STATE
 
 FAST = int(os.getenv("FAST_MA", "5"))
@@ -31,18 +32,8 @@ def on_bar_close(bars):
     with STATE.lock:
         pos = STATE.position
 
+    # 只需要告訴下單層目標方向：+1 多 / -1 空 / 0 空手
     if golden and pos <= 0:
-        _flip(+1, price, f"MA{FAST} 上穿 MA{SLOW}")
+        BROKER.set_target(+1, price, f"MA{FAST} 上穿 MA{SLOW}")
     elif death and pos >= 0:
-        _flip(-1, price, f"MA{FAST} 下穿 MA{SLOW}")
-
-
-def _flip(target, price, reason):
-    with STATE.lock:
-        if STATE.position != 0 and STATE.position_price is not None:
-            STATE.virtual_pnl += (price - STATE.position_price) * STATE.position
-        STATE.position = target
-        STATE.position_price = price
-    side = "多" if target > 0 else "空"
-    STATE.add_signal(side, price, reason)
-    STATE.log("SIGNAL", f"{side} @ {price}  {reason}")
+        BROKER.set_target(-1, price, f"MA{FAST} 下穿 MA{SLOW}")

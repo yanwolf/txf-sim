@@ -40,13 +40,37 @@
 
 `requirements.txt` 鎖 `shioaji>=1.7,<2`。1.7 是 Rust 重寫版，介面跟舊版不同（回呼掛在 `api` 上、tick 回呼只有一個參數、登入後要另外 `fetch_contracts()`），`engine.py` 兩種都能跑，會自動偵測。若之後想沿用舊專案的 1.5.x，改 requirements 即可。
 
-## 已知限制（下一步再處理）
+## 持久化 / 下單 / 告警
 
-- 狀態全在記憶體，容器重啟就清空（之後接 DB）
-- 只有一個示範策略，MultiCharts 邏輯要搬進 `app/strategy.py` 的 `on_bar_close()`
-- 重連有 5 分鐘保護間隔，避免撞每日登入次數上限
-- 沒有換月邏輯（R1 由 Shioaji 自動切，但持倉跨月要自己處理）
-- 沒有下單、風控、告警
+**DB**：Zeabur 專案加一個 PostgreSQL 服務，把它的連線字串填到 `DATABASE_URL`。
+存 K 線、訊號、事件、委託、成交、部位與風控狀態；容器重啟後自動還原。
+不填則用 SQLite（`DATA_DIR`，沒掛 volume 會落在 /tmp，重啟就沒了）。
+
+**下單** `MODE`：
+- `signal`：只記錄訊號、算虛擬部位（預設）
+- `sim`：真的送單到 Shioaji 模擬環境，市價 IOC、自動新平倉。需 `SIMULATION=true`
+- `live`：正式下單。需 `SIMULATION=false`、`LIVE_CONFIRM=YES`、`CA_PFX_BASE64`/`CA_PASSWORD`/`PERSON_ID`
+
+策略只呼叫 `BROKER.set_target(+1/-1/0, price, reason)`，下單層負責：
+- 算差額口數、送單、追蹤回報（送出 → 成交 / 取消 / 失敗）
+- IOC 沒成交重送一次；連續 `MAX_ORDER_FAILURES` 次失敗就停策略（儀表板按「恢復」）
+- 每分鐘跟券商對帳，不一致告警並以券商為準（`RECONCILE_ADOPT`）
+- 風控：kill switch、`DAILY_LOSS_LIMIT_PTS` 單日虧損上限（達到就平倉並鎖到隔天）、`MAX_POSITION`、非交易時段不送單、`FLAT_AT_DAY_CLOSE` 日盤收盤前平倉
+- 儀表板按鈕：Kill switch / 全部平倉 / 恢復 / 立即對帳
+
+**Telegram**：填 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`，推播訊號、成交、委託失敗、斷線重連、對帳不一致、kill。
+
+## 建議切換順序
+
+1. `MODE=signal` + DB：確認重啟後部位/K 線有還原
+2. `MODE=sim`：模擬環境真的送單，看委託表的狀態流轉、對帳是否一致、Telegram 有沒有收到
+3. 策略搬完並跟 MultiCharts 比對一致後，才考慮 `live`
+
+## 已知限制
+
+- 換月：R1 會自動切到次月，但既有持倉在舊月合約，結算日前要手動處理（下一步做自動換月）
+- 對帳只看單一合約代碼，若手上有其他月份或手動單會顯示不一致
+- `live` 路徑沒有實測過，第一次上正式務必 `LOTS=1` 盯著看
 
 ## 檔案
 
@@ -59,4 +83,7 @@ app/strategy.py    策略（改這裡）
 app/state.py       共享狀態、交易時段判斷
 app/server.py      HTTP API
 app/dashboard.html 儀表板
+app/broker.py      下單層：狀態機 / 風控 / 對帳 / kill switch
+app/db.py          SQLite 或 PostgreSQL 持久化
+app/notify.py      Telegram 推播
 ```

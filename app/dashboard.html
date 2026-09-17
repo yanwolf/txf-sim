@@ -38,6 +38,13 @@
   .ERROR{color:var(--up)} .WARN{color:var(--warn)} .SIGNAL{color:#7fb3ff}
   .empty{color:var(--dim);padding:10px}
   .banner{background:#3a2a10;color:var(--warn);padding:8px 12px;border-radius:6px;margin:12px 0}
+  .banner.bad{background:#3d1b1d;color:var(--up)}
+  .ORDER,.FILL{color:#b48cff}
+  .ctl{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  button{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}
+  button.danger{border-color:var(--up);color:var(--up)}
+  button:disabled{opacity:.4;cursor:default}
+  .st-ok{color:var(--down)} .st-bad{color:var(--up)} .st-warn{color:var(--warn)}
 </style>
 </head>
 <body>
@@ -57,14 +64,30 @@
     <div><span>今日 開/高/低</span><b class="num" id="ohl">—</b></div>
     <div><span>今日量</span><b class="num" id="vol">—</b></div>
     <div><span>K 線（暖機+即時）</span><b class="num" id="bars">—</b></div>
-    <div><span>虛擬部位 / 損益（點）</span><b class="num" id="pos">—</b></div>
+    <div><span id="pos-label">部位 / 損益（點）</span><b class="num" id="pos">—</b></div>
+    <div><span>券商部位 / 對帳</span><b class="num" id="bpos">—</b></div>
+    <div><span>下單合約</span><b id="ocode">—</b></div>
+    <div><span>資料庫 / Telegram</span><b id="infra">—</b></div>
     <div><span>流量用量</span><b class="num" id="usage">—</b></div>
     <div><span>登入次數</span><b class="num" id="logins">—</b></div>
     <div><span>結算日</span><b id="deliv">—</b></div>
     <div><span>模式</span><b id="mode">—</b></div>
   </div>
 
-  <h2>策略訊號（只記錄，不下單）</h2>
+  <div class="ctl">
+    <button id="btn-kill" class="danger" onclick="post('/api/kill','確定開啟 kill switch？之後所有訊號都會被忽略')">Kill switch</button>
+    <button id="btn-flat" class="danger" onclick="post('/api/flat','確定用市價平掉目前部位？')">全部平倉</button>
+    <button id="btn-resume" onclick="post('/api/resume')">恢復</button>
+    <button onclick="post('/api/reconcile')">立即對帳</button>
+  </div>
+
+  <h2 id="orders-h">委託與成交</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>時間</th><th>方向</th><th>口</th><th>狀態</th><th>成交</th><th>均價</th><th>原因</th></tr></thead>
+    <tbody id="ot"><tr><td colspan="7" class="empty">尚無委託</td></tr></tbody>
+  </table></div>
+
+  <h2 id="sig-h">策略訊號</h2>
   <div class="log" id="signals"><div class="empty">尚無訊號</div></div>
 
   <h2>最近 1 分 K</h2>
@@ -84,11 +107,12 @@ const fmt=v=>v==null?'—':Number(v).toLocaleString('zh-TW');
 
 async function tick(){
   try{
-    const [s,bars,sig,ev]=await Promise.all([
+    const [s,bars,sig,ev,orders]=await Promise.all([
       fetch('/api/status').then(r=>r.json()),
       fetch('/api/bars?n=40').then(r=>r.json()),
       fetch('/api/signals').then(r=>r.json()),
       fetch('/api/events').then(r=>r.json()),
+      fetch('/api/orders').then(r=>r.json()),
     ]);
     const c=cls(s.change);
     $('price').textContent=fmt(s.last_price); $('price').className='price num '+c;
@@ -103,22 +127,43 @@ async function tick(){
     $('ohl').textContent=s.day_open==null?'—':`${fmt(s.day_open)} / ${fmt(s.day_high)} / ${fmt(s.day_low)}`;
     $('vol').textContent=fmt(s.day_volume);
     $('bars').textContent=`${s.bar_count}（暖機 ${s.warmup_bars}）`;
-    $('pos').textContent=`${s.position>0?'多':s.position<0?'空':'無'} / ${s.virtual_pnl}`;
+    const sigMode=s.mode==='signal';
+    $('pos-label').textContent=sigMode?'虛擬部位 / 損益（點）':'部位 @ 均價 / 今日已實現 + 未實現';
+    $('pos').textContent=sigMode
+      ? `${s.position>0?'多'+s.position:s.position<0?'空'+(-s.position):'無'} / ${s.virtual_pnl}`
+      : `${s.position>0?'多'+s.position:s.position<0?'空'+(-s.position):'無'}${s.position_price?' @ '+s.position_price:''} / ${s.realized_pnl} + ${s.unrealized_pnl}`;
+    $('bpos').innerHTML=sigMode?'—（訊號模式）':(s.broker_position==null?'尚未對帳':`${s.broker_position} <span class="${s.reconcile_ok?'st-ok':'st-bad'}">${s.reconcile_ok?'一致':'不一致'}</span>`);
+    $('ocode').textContent=s.order_contract||'—';
+    $('infra').innerHTML=`<span class="${s.db&&s.db.ok?'st-ok':'st-warn'}">${s.db?(s.db.ok?s.db.kind:'離線'):'—'}</span> / <span class="${s.telegram?'st-ok':'st-warn'}">${s.telegram?'已設定':'未設定'}</span>`;
+    $('btn-kill').disabled=s.kill; $('btn-resume').disabled=!(s.kill||s.strategy_halted);
+    $('btn-flat').disabled=!s.position;
     $('usage').textContent=s.usage?`${s.usage.bytes_mb} / ${s.usage.limit_mb} MB，連線 ${s.usage.connections}`:'—';
     $('logins').textContent=`${s.login_count}（${s.last_login_at?s.last_login_at.slice(11,19):'—'}）`;
     $('deliv').textContent=s.contract?s.contract.delivery_date:'—';
-    $('mode').textContent=s.mode==='signal'?'訊號模式':s.mode;
+    $('mode').textContent=({signal:'訊號模式（不下單）',sim:'模擬下單',live:'正式下單'})[s.mode]||s.mode;
+    $('orders-h').textContent=sigMode?'委託與成交（訊號模式不會有）':'委託與成交';
 
-    const b=$('banner'); const msgs=[];
+    const b=$('banner'); const msgs=[]; let bad=false;
+    if(s.kill){msgs.push('kill switch 開啟：'+(s.kill_reason||''));bad=true;}
+    if(s.strategy_halted){msgs.push('策略已停止：'+s.strategy_halted);bad=true;}
+    if(s.reconcile_ok===false){msgs.push('內部部位與券商不一致');bad=true;}
+    if(s.pending_order) msgs.push('委託 '+s.pending_order+' 進行中');
     if(s.last_login_error) msgs.push('登入失敗：'+s.last_login_error);
     if(s.warmup_error) msgs.push('暖機回補失敗：'+s.warmup_error);
     if(!s.in_session&&s.login_ok) msgs.push('目前非交易時段，不會有 tick 進來；日盤 08:45–13:45、夜盤 15:00–05:00');
-    b.style.display=msgs.length?'block':'none'; b.textContent=msgs.join('　|　');
+    b.style.display=msgs.length?'block':'none'; b.textContent=msgs.join('　|　'); b.className='banner'+(bad?' bad':'');
 
     $('kt').innerHTML=bars.length?bars.slice().reverse().map(k=>`<tr class="num"><td>${k.ts.slice(5)}</td><td>${k.open}</td><td>${k.high}</td><td>${k.low}</td><td class="${cls(k.close-k.open)}">${k.close}</td><td>${k.volume}</td><td>${k.src==='live'?'即時':'回補'}</td></tr>`).join(''):'<tr><td colspan="7" class="empty">尚無資料</td></tr>';
-    $('signals').innerHTML=sig.length?sig.map(x=>`<div><span class="t">${x.t}</span><b class="${x.side==='多'?'up':'down'}">${x.side}</b> @ ${x.price}　${x.reason}</div>`).join(''):'<div class="empty">尚無訊號</div>';
-    $('events').innerHTML=ev.map(e=>`<div class="${e.level}"><span class="t">${e.t}</span>${e.msg}</div>`).join('');
+    const stc={filled:'st-ok',failed:'st-bad',cancelled:'st-warn',sent:'st-warn',sending:'st-warn'};
+    $('ot').innerHTML=orders.length?orders.map(o=>`<tr class="num"><td>${(o.t||'').slice(5)}</td><td class="${o.action==='Buy'?'up':'down'}">${o.action==='Buy'?'買':'賣'}</td><td>${o.qty}</td><td class="${stc[o.status]||''}">${o.status}</td><td>${o.filled_qty||0}</td><td>${o.avg_price||'—'}</td><td>${o.reason||''}${o.msg?' · '+o.msg:''}</td></tr>`).join(''):'<tr><td colspan="7" class="empty">尚無委託</td></tr>';
+    $('signals').innerHTML=sig.length?sig.map(x=>`<div><span class="t">${x.t.slice(5)}</span><b class="${x.side==='多'?'up':x.side==='空'?'down':'flat'}">${x.side}</b> @ ${x.price}　${x.reason}</div>`).join(''):'<div class="empty">尚無訊號</div>';
+    $('events').innerHTML=ev.map(e=>`<div class="${e.level}"><span class="t">${e.t.slice(5)}</span>${e.msg}</div>`).join('');
   }catch(e){ $('sym').textContent='無法連到伺服器'; }
+}
+async function post(path,confirmMsg){
+  if(confirmMsg&&!confirm(confirmMsg))return;
+  try{await fetch(path,{method:'POST'});}catch(e){alert('操作失敗：'+e);}
+  tick();
 }
 tick(); setInterval(tick,3000);
 </script>
