@@ -30,7 +30,7 @@ DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT_PTS", "300"))   # 每口點
 ORDER_TIMEOUT = int(os.getenv("ORDER_TIMEOUT", "15"))
 MAX_ORDER_FAILURES = int(os.getenv("MAX_ORDER_FAILURES", "2"))
 FLAT_AT_DAY_CLOSE = os.getenv("FLAT_AT_DAY_CLOSE", "false").lower() == "true"
-RECONCILE_ADOPT = os.getenv("RECONCILE_ADOPT", "true").lower() == "true"
+RECONCILE_ADOPT = os.getenv("RECONCILE_ADOPT", "false").lower() == "true"
 
 # 新舊版 shioaji 常數相容
 _C = sj.constant
@@ -415,17 +415,27 @@ class Broker:
             positions = self.api.list_positions(self.account)
             code = STATE.order_contract or ""
             net = 0
+            rows = []
             for p in positions:
-                if str(getattr(p, "code", "")) != code:
+                pc = str(getattr(p, "code", ""))
+                q = int(getattr(p, "quantity", 0) or 0)
+                d = str(getattr(p, "direction", ""))
+                rows.append(f"{pc} {d} {q}")
+                if pc != code:
                     continue
-                q = int(getattr(p, "quantity", 0))
-                net += q if "Buy" in str(getattr(p, "direction", "")) else -q
+                # 有些環境空單的 quantity 已是負數，避免負負得正
+                net += abs(q) if "Buy" in d else -abs(q)
             with STATE.lock:
                 mine = STATE.position
                 STATE.broker_position = net
                 STATE.reconcile_ok = (net == mine)
             if net != mine:
-                STATE.log("ERROR", f"部位不一致：內部 {mine}，券商 {net}" + ("，改以券商為準" if RECONCILE_ADOPT else ""))
+                STATE.log("ERROR", f"部位不一致：內部 {mine}，券商 {net}" + ("，改以券商為準" if RECONCILE_ADOPT else "，僅告警"))
+                STATE.log("WARN", f"券商原始部位回傳（{len(positions)} 筆）：{rows or '空'}")
+                try:
+                    STATE.log("WARN", f"repr: {[repr(p) for p in positions][:5]}")
+                except Exception:
+                    pass
                 notify(f"⚠️ 部位不一致：內部 {mine} / 券商 {net}", key="reconcile", cooldown=300)
                 if RECONCILE_ADOPT:
                     with STATE.lock:
