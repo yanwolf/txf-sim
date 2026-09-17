@@ -16,6 +16,7 @@ from .state import STATE, TZ, in_session, now
 API_KEY = os.getenv("SHIOAJI_API_KEY", "")
 SECRET_KEY = os.getenv("SHIOAJI_SECRET_KEY", "")
 CONTRACT_CODE = os.getenv("CONTRACT_CODE", "TXF").upper()
+ORDER_CONTRACT_CODE = os.getenv("ORDER_CONTRACT_CODE", CONTRACT_CODE).upper()   # 訊號看 TXF、下單下 TMF 之類
 SIMULATION = os.getenv("SIMULATION", "true").lower() != "false"
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "3"))
 STALE_SECONDS = int(os.getenv("STALE_SECONDS", "180"))
@@ -135,115 +136,24 @@ class Engine:
             STATE.log("ERROR", f"憑證啟用失敗：{e!r}")
 
     def _order_contract(self):
-        """R1 是連續合約代號，下單要用實際月合約（如 TXFJ6）。"""
+        """R1 是連續合約代號，下單要用實際月合約（如 TXFJ6）。下單商品可與行情商品不同。"""
         try:
-            group = getattr(self.api.Contracts.Futures, CONTRACT_CODE)
-            target = getattr(self.contract, "target_code", None)
+            code = ORDER_CONTRACT_CODE
+            group = getattr(self.api.Contracts.Futures, code)
+            digits = lambda v: "".join(ch for ch in str(v) if ch.isdigit())
+            # 先試該商品的 R1 指向的月合約
+            r1 = group.get(f"{code}R1") if hasattr(group, "get") else getattr(group, f"{code}R1", None)
+            target = getattr(r1, "target_code", None) if r1 is not None else None
             if target:
                 c = group.get(target) if hasattr(group, "get") else getattr(group, target, None)
                 if c is not None:
                     return c
-            digits = lambda v: "".join(ch for ch in str(v) if ch.isdigit())
             today = digits(now().date())
-            cands = [x for x in group if len(x.code) == len(CONTRACT_CODE) + 2 and digits(x.delivery_date) >= today]
+            cands = [x for x in group if len(x.code) == len(code) + 2 and digits(x.delivery_date) >= today]
             return sorted(cands, key=lambda x: digits(x.delivery_date))[0]
         except Exception as e:
-            STATE.log("ERROR", f"找不到下單用月合約：{e!r}")
+            STATE.log("ERROR", f"找不到下單用月合約 {ORDER_CONTRACT_CODE}：{e!r}")
             return None
-
-    def _pick_contract(self):
-        try:
-            if not self._legacy:
-                self.api.fetch_contracts(contract_download=True, contracts_timeout=30000)
-            group = getattr(self.api.Contracts.Futures, CONTRACT_CODE)
-            c = group.get(f"{CONTRACT_CODE}R1") if hasattr(group, "get") else getattr(group, f"{CONTRACT_CODE}R1", None)
-            if c is None:
-                # 沒有 R1 連續合約就自己挑最近的未到期月合約
-                digits = lambda v: "".join(ch for ch in str(v) if ch.isdigit())
-                today = digits(now().date())
-                cands = [x for x in group
-                         if len(x.code) == len(CONTRACT_CODE) + 2 and digits(x.delivery_date) >= today]
-                c = sorted(cands, key=lambda x: digits(x.delivery_date))[0]
-            self.contract = c
-            g = lambda k, d=None: getattr(c, k, d)
-            num = lambda v: float(v) if v not in (None, "", 0) else None
-            with STATE.lock:
-                STATE.contract = {
-                    "code": g("code"), "symbol": g("symbol", g("code")), "name": g("name", ""),
-                    "delivery_date": str(g("delivery_date", "")),
-                    "last_trading_date": str(g("last_trading_date", "")),
-                    "reference": num(g("reference")),
-                    "limit_up": num(g("limit_up")),
-                    "limit_down": num(g("limit_down")),
-                }
-                if STATE.contract["reference"]:
-                    STATE.prev_close = STATE.contract["reference"]
-            STATE.log("INFO", f"合約：{g('code')} {g('name', '')} 結算日 {g('delivery_date', '')}")
-        except Exception as e:
-            self.contract = None
-            STATE.log("ERROR", f"找不到合約 {CONTRACT_CODE}R1：{e!r}（合約檔可能尚未下載完成）")
-
-    def _warmup(self):
-        try:
-            end = now().date()
-            start = end - timedelta(days=WARMUP_DAYS)
-            k = self.api.kbars(self.contract, start=start.isoformat(), end=end.isoformat())
-            bars = []
-            for ts, o, h, l, c, v in zip(k.ts, k.Open, k.High, k.Low, k.Close, k.Volume):
-                # Shioaji 的 ts 已是台北時間（以 UTC 形式存），且標的是該分鐘的「結束」時間
-                # 轉成跟即時 K 一致的「起始分鐘」標籤
-                dt = datetime.utcfromtimestamp(ts / 1e9) - timedelta(minutes=1)
-                bars.append({"ts": dt.strftime("%Y-%m-%d %H:%M"), "open": float(o), "high": float(h),
-                             "low": float(l), "close": float(c), "volume": int(v), "src": "hist"})
-            with STATE.lock:
-                merged = {b["ts"]: b for b in STATE.bars}
-                merged.update({b["ts"]: b for b in bars})
-                STATE.bars.clear()
-                STATE.bars.extend(sorted(merged.values(), key=lambda b: b["ts"])[-600:])
-                STATE.warmup_bars = len(bars)
-                STATE.warmup_error = None
-                if bars and not STATE.prev_close:
-                    STATE.prev_close = bars[-1]["close"]
-            DB_.upsert_bars(bars[-400:])
-            STATE.log("INFO", f"暖機回補 1 分 K {len(bars)} 根（{start} ~ {end}）")
-        except Exception as e:
-            with STATE.lock:
-                STATE.warmup_error = repr(e)
-            STATE.log("WARN", f"暖機回補失敗：{e!r}")
-
-    def _subscribe(self):
-        try:
-            if self._legacy:
-                self.api.quote.set_on_tick_fop_v1_callback(lambda exchange, tick: self._on_tick(tick))
-                self.api.quote.set_event_callback(self._on_event)
-                self.api.quote.subscribe(self.contract, quote_type=sj.constant.QuoteType.Tick,
-                                         version=sj.constant.QuoteVersion.v1)
-            else:
-                self.api.set_on_tick_fop_v1_callback(self._on_tick)
-                self.api.set_event_callback(self._on_event)
-                self.api.set_session_down_callback(self._on_session_down)
-                self.api.subscribe(self.contract, quote_type=sj.constant.QuoteType.Tick,
-                                   version=sj.constant.QuoteVersion.v1)
-            with STATE.lock:
-                STATE.subscribed = True
-            STATE.log("INFO", f"已訂閱 {self.contract.code} Tick")
-        except Exception as e:
-            with STATE.lock:
-                STATE.subscribed = False
-            STATE.log("ERROR", f"訂閱失敗：{e!r}")
-
-    def _refresh_usage(self):
-        try:
-            u = self.api.usage()
-            with STATE.lock:
-                STATE.usage = {
-                    "connections": u.connections,
-                    "bytes_mb": round(u.bytes / 1e6, 2),
-                    "limit_mb": round(u.limit_bytes / 1e6, 1),
-                    "remaining_mb": round(u.remaining_bytes / 1e6, 1),
-                }
-        except Exception as e:
-            STATE.log("WARN", f"查詢 usage 失敗：{e!r}")
 
     # ------------------------------------------------------------ 回呼
     def _on_event(self, resp_code, event_code, info, event):
