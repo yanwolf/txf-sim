@@ -31,6 +31,7 @@ ORDER_TIMEOUT = int(os.getenv("ORDER_TIMEOUT", "15"))
 MAX_ORDER_FAILURES = int(os.getenv("MAX_ORDER_FAILURES", "2"))
 FLAT_AT_DAY_CLOSE = os.getenv("FLAT_AT_DAY_CLOSE", "false").lower() == "true"
 RECONCILE_ADOPT = os.getenv("RECONCILE_ADOPT", "false").lower() == "true"
+SPLIT_FLIP = os.getenv("SPLIT_FLIP", "true").lower() == "true"   # 反手拆成「平倉」+「新倉」兩張單
 
 # 新舊版 shioaji 常數相容
 _C = sj.constant
@@ -147,7 +148,13 @@ class Broker:
         if self.pending:
             STATE.log("WARN", f"前一張委託 {self.pending} 未完成，先不送新單")
             return
-        self._place(delta, price, reason)
+        if SPLIT_FLIP and pos != 0 and target != 0 and (pos > 0) != (target > 0):
+            # 反手：先平掉舊部位，成交後再開新倉
+            self._place(-pos, price, reason + "／平倉", octype="Cover",
+                        then=(target, price, reason + "／新倉"))
+        else:
+            oc = "Cover" if (pos != 0 and abs(target) < abs(pos) and (target == 0 or (target > 0) == (pos > 0))) else "Auto"
+            self._place(delta, price, reason, octype=oc)
 
     # ------------------------------------------------------------ 虛擬成交
     def _virtual_fill(self, target, price):
@@ -160,7 +167,7 @@ class Broker:
         self.persist()
 
     # ------------------------------------------------------------ 送單
-    def _place(self, delta, ref_price, reason, retry=0):
+    def _place(self, delta, ref_price, reason, retry=0, octype="Auto", then=None):
         if not in_session(now()):
             STATE.log("WARN", f"非交易時段，不送單（{reason}）")
             return
@@ -172,7 +179,8 @@ class Broker:
         oid = f"local-{uuid.uuid4().hex[:8]}"
         rec = {"id": oid, "t": _ts(), "code": STATE.order_contract, "action": "Buy" if delta > 0 else "Sell",
                "qty": qty, "price": 0, "status": "sending", "filled_qty": 0, "avg_price": None,
-               "msg": "", "reason": reason, "mode": MODE, "sent_at": time.time(), "retry": retry}
+               "msg": "", "reason": reason, "mode": MODE, "sent_at": time.time(), "retry": retry,
+               "octype": octype, "then": then}
         with self.lock:
             self.orders[oid] = rec
             self.pending = oid
@@ -180,8 +188,9 @@ class Broker:
             STATE.orders.appendleft(rec)
             STATE.pending_order = oid
         try:
+            oc = {"Cover": OC.Cover, "New": OC.New}.get(octype, OC.Auto)
             order = FuturesOrder(action=action, price=0, quantity=qty, price_type=FPT.MKT,
-                                 order_type=OT.IOC, octype=OC.Auto, account=self.account)
+                                 order_type=OT.IOC, octype=oc, account=self.account)
             trade = self.api.place_order(self.contract, order)
             real_id = getattr(trade.order, "id", None) or getattr(trade.order, "seqno", None) or oid
             st = getattr(trade.status, "status", None)
@@ -191,7 +200,7 @@ class Broker:
                     rec["status"] = "sent"
                 rec["msg"] = rec.get("msg") or str(getattr(trade.status, "msg", "") or "")
                 self.orders[real_id] = rec
-            STATE.log("ORDER", f"送單 {rec['action']} {qty} 口 市價 IOC（{reason}）→ {real_id} {st}")
+            STATE.log("ORDER", f"送單 {rec['action']} {qty} 口 市價 IOC {octype}（{reason}）→ {real_id} {st}")
             self._sync_trade(trade)
         except Exception as e:
             self._order_failed(rec, f"送單例外：{e!r}")
@@ -287,11 +296,17 @@ class Broker:
         if rec is not None:
             rec["filled_qty"] = rec.get("filled_qty", 0) + qty
             rec["avg_price"] = price if not rec.get("avg_price") else (rec["avg_price"] + price) / 2
+            nxt = None
             if rec["filled_qty"] >= rec["qty"]:
                 rec["status"] = "filled"
                 self._clear_pending(rec)
                 self.failures = 0
+                nxt = rec.pop("then", None)
             DB_.upsert_order(rec)
+            if nxt:
+                target, p2, r2 = nxt
+                threading.Thread(target=self._place, args=(target, p2, r2), kwargs={"octype": "New"},
+                                 daemon=True).start()
         STATE.log("FILL", f"成交 {action} {qty} @ {price} → 部位 {STATE.position} @ {STATE.position_price}")
         notify(f"成交 {action} {qty} @ {price}\n部位 {STATE.position} @ {STATE.position_price}  今日已實現 {STATE.realized_pnl:.0f} 點")
         self.persist()
@@ -333,7 +348,8 @@ class Broker:
         if remaining > 0 and rec.get("retry", 0) < 1:
             STATE.log("INFO", "重送一次")
             delta = remaining if rec["action"] == "Buy" else -remaining
-            self._place(delta, rec.get("price"), rec["reason"] + "（重送）", retry=1)
+            self._place(delta, rec.get("price"), rec["reason"] + "（重送）", retry=1,
+                        octype=rec.get("octype", "Auto"), then=rec.get("then"))
         else:
             self.failures += 1
             self._check_failures()
