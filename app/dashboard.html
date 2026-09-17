@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>台指期 模擬連線</title>
+<style>
+  :root{
+    --bg:#15171c; --panel:#1d2028; --line:#2b2f3a; --ink:#e8e6df; --dim:#8a8f9c;
+    --up:#e5484d; --down:#2fb36b; --warn:#e0a83a;
+    font-family: "PingFang TC","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.5}
+  .wrap{max-width:900px;margin:0 auto;padding:16px}
+  .num{font-variant-numeric:tabular-nums}
+
+  .hero{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;padding:8px 0 14px;border-bottom:1px solid var(--line)}
+  .hero .price{font-size:52px;font-weight:600;letter-spacing:-1px;line-height:1}
+  .hero .chg{font-size:20px;font-weight:500}
+  .hero .sym{color:var(--dim)}
+  .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--ink)}
+
+  .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px 18px;padding:14px 0;border-bottom:1px solid var(--line)}
+  .strip div span{display:block;color:var(--dim);font-size:12px}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:var(--dim);vertical-align:middle}
+  .dot.on{background:var(--down)} .dot.bad{background:var(--up)} .dot.warn{background:var(--warn)}
+
+  h2{font-size:14px;font-weight:600;margin:20px 0 8px;color:var(--dim)}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:5px 6px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--dim);font-weight:500;font-size:12px}
+  td:first-child,th:first-child{text-align:left}
+  .scroll{overflow-x:auto;max-height:340px;overflow-y:auto;background:var(--panel);border-radius:6px}
+  .log{background:var(--panel);border-radius:6px;padding:8px 10px;max-height:260px;overflow:auto;font-size:12.5px}
+  .log div{padding:2px 0;border-bottom:1px solid var(--line)}
+  .log .t{color:var(--dim);margin-right:8px}
+  .ERROR{color:var(--up)} .WARN{color:var(--warn)} .SIGNAL{color:#7fb3ff}
+  .empty{color:var(--dim);padding:10px}
+  .banner{background:#3a2a10;color:var(--warn);padding:8px 12px;border-radius:6px;margin:12px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div class="price num flat" id="price">—</div>
+    <div class="chg num flat" id="chg"></div>
+    <div class="sym" id="sym">連線中…</div>
+  </div>
+  <div id="banner" class="banner" style="display:none"></div>
+
+  <div class="strip">
+    <div><span>登入</span><i class="dot" id="d-login"></i><b id="login">—</b></div>
+    <div><span>行情訂閱</span><i class="dot" id="d-sub"></i><b id="sub">—</b></div>
+    <div><span>交易時段</span><b id="sess">—</b></div>
+    <div><span>Tick 數 / 最後一筆</span><b class="num" id="ticks">—</b></div>
+    <div><span>今日 開/高/低</span><b class="num" id="ohl">—</b></div>
+    <div><span>今日量</span><b class="num" id="vol">—</b></div>
+    <div><span>K 線（暖機+即時）</span><b class="num" id="bars">—</b></div>
+    <div><span>虛擬部位 / 損益（點）</span><b class="num" id="pos">—</b></div>
+    <div><span>流量用量</span><b class="num" id="usage">—</b></div>
+    <div><span>登入次數</span><b class="num" id="logins">—</b></div>
+    <div><span>結算日</span><b id="deliv">—</b></div>
+    <div><span>模式</span><b id="mode">—</b></div>
+  </div>
+
+  <h2>策略訊號（只記錄，不下單）</h2>
+  <div class="log" id="signals"><div class="empty">尚無訊號</div></div>
+
+  <h2>最近 1 分 K</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>時間</th><th>開</th><th>高</th><th>低</th><th>收</th><th>量</th><th>來源</th></tr></thead>
+    <tbody id="kt"><tr><td colspan="7" class="empty">尚無資料</td></tr></tbody>
+  </table></div>
+
+  <h2>事件紀錄</h2>
+  <div class="log" id="events"></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const cls=v=>v>0?'up':v<0?'down':'flat';
+const fmt=v=>v==null?'—':Number(v).toLocaleString('zh-TW');
+
+async function tick(){
+  try{
+    const [s,bars,sig,ev]=await Promise.all([
+      fetch('/api/status').then(r=>r.json()),
+      fetch('/api/bars?n=40').then(r=>r.json()),
+      fetch('/api/signals').then(r=>r.json()),
+      fetch('/api/events').then(r=>r.json()),
+    ]);
+    const c=cls(s.change);
+    $('price').textContent=fmt(s.last_price); $('price').className='price num '+c;
+    $('chg').textContent=s.change==null?'':(s.change>0?'+':'')+s.change; $('chg').className='chg num '+c;
+    $('sym').textContent=s.contract?`${s.contract.code} ${s.contract.name}`:'等待合約…';
+
+    $('d-login').className='dot '+(s.login_ok?'on':'bad'); $('login').textContent=s.login_ok?`已登入（${s.simulation?'模擬':'正式'}）`:'未登入';
+    $('d-sub').className='dot '+(s.subscribed?(s.tick_age_sec!=null&&s.tick_age_sec>120&&s.in_session?'warn':'on'):'bad');
+    $('sub').textContent=s.subscribed?'訂閱中':'未訂閱';
+    $('sess').textContent=s.in_session?'盤中':'非交易時段';
+    $('ticks').textContent=`${fmt(s.tick_count)} / ${s.last_tick_at||'—'}`;
+    $('ohl').textContent=s.day_open==null?'—':`${fmt(s.day_open)} / ${fmt(s.day_high)} / ${fmt(s.day_low)}`;
+    $('vol').textContent=fmt(s.day_volume);
+    $('bars').textContent=`${s.bar_count}（暖機 ${s.warmup_bars}）`;
+    $('pos').textContent=`${s.position>0?'多':s.position<0?'空':'無'} / ${s.virtual_pnl}`;
+    $('usage').textContent=s.usage?`${s.usage.bytes_mb} / ${s.usage.limit_mb} MB，連線 ${s.usage.connections}`:'—';
+    $('logins').textContent=`${s.login_count}（${s.last_login_at?s.last_login_at.slice(11,19):'—'}）`;
+    $('deliv').textContent=s.contract?s.contract.delivery_date:'—';
+    $('mode').textContent=s.mode==='signal'?'訊號模式':s.mode;
+
+    const b=$('banner'); const msgs=[];
+    if(s.last_login_error) msgs.push('登入失敗：'+s.last_login_error);
+    if(s.warmup_error) msgs.push('暖機回補失敗：'+s.warmup_error);
+    if(!s.in_session&&s.login_ok) msgs.push('目前非交易時段，不會有 tick 進來；日盤 08:45–13:45、夜盤 15:00–05:00');
+    b.style.display=msgs.length?'block':'none'; b.textContent=msgs.join('　|　');
+
+    $('kt').innerHTML=bars.length?bars.slice().reverse().map(k=>`<tr class="num"><td>${k.ts.slice(5)}</td><td>${k.open}</td><td>${k.high}</td><td>${k.low}</td><td class="${cls(k.close-k.open)}">${k.close}</td><td>${k.volume}</td><td>${k.src==='live'?'即時':'回補'}</td></tr>`).join(''):'<tr><td colspan="7" class="empty">尚無資料</td></tr>';
+    $('signals').innerHTML=sig.length?sig.map(x=>`<div><span class="t">${x.t}</span><b class="${x.side==='多'?'up':'down'}">${x.side}</b> @ ${x.price}　${x.reason}</div>`).join(''):'<div class="empty">尚無訊號</div>';
+    $('events').innerHTML=ev.map(e=>`<div class="${e.level}"><span class="t">${e.t}</span>${e.msg}</div>`).join('');
+  }catch(e){ $('sym').textContent='無法連到伺服器'; }
+}
+tick(); setInterval(tick,3000);
+</script>
+</body>
+</html>
