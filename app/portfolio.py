@@ -30,6 +30,7 @@ class Portfolio:
         self.first_tick = {}       # minutes -> 下一筆 tick 是新 K 第一筆
         self.ready = False
         self.align_pending = False
+        self._last_sync = 0.0
         self.load_config()
 
     # ------------------------------------------------------------ 設定
@@ -205,6 +206,15 @@ class Portfolio:
             if self.align_pending:
                 self.align_pending = False
                 self._send_net(price, "啟動對齊")
+            else:
+                # 券商部位與策略淨部位不同（例如 kill 解除後、或委託失敗過）：每 60 秒嘗試對齊一次
+                import time as _t
+                if _t.time() - self._last_sync > 60:
+                    self._last_sync = _t.time()
+                    with STATE.lock:
+                        pos, kill, halted, pending = STATE.position, STATE.kill, STATE.strategy_halted, STATE.pending_order
+                    if not kill and not halted and not pending and pos != self.net():
+                        self._send_net(price, "部位對齊")
             for m, strats in self.by_tf.items():
                 for s in strats:
                     key = (m, s.name)
