@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import base64
 import shioaji as sj
 
-from . import strategy
+from .portfolio import PORTFOLIO
 from .broker import BROKER, MODE
 from .db import DB_
 from .notify import notify
@@ -18,13 +18,23 @@ SECRET_KEY = os.getenv("SHIOAJI_SECRET_KEY", "")
 CONTRACT_CODE = os.getenv("CONTRACT_CODE", "TXF").upper()
 ORDER_CONTRACT_CODE = os.getenv("ORDER_CONTRACT_CODE", CONTRACT_CODE).upper()   # 訊號看 TXF、下單下 TMF 之類
 SIMULATION = os.getenv("SIMULATION", "true").lower() != "false"
-WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "3"))
+WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "45"))
 STALE_SECONDS = int(os.getenv("STALE_SECONDS", "180"))
 MIN_RELOGIN_GAP = 300  # 秒。避免重連風暴撞到每日登入次數上限
 LIVE_CONFIRM = os.getenv("LIVE_CONFIRM", "") == "YES"
 CA_PFX_BASE64 = os.getenv("CA_PFX_BASE64", "")
 CA_PASSWORD = os.getenv("CA_PASSWORD", "")
 PERSON_ID = os.getenv("PERSON_ID", "")
+
+
+def _norm_minute(dt):
+    """13:45 / 05:00 的收盤撮合併入最後一根 1 分 K。"""
+    dt = dt.replace(second=0, microsecond=0)
+    if dt.hour == 13 and dt.minute == 45:
+        return dt.replace(minute=44)
+    if dt.hour == 5 and dt.minute == 0:
+        return dt.replace(hour=4, minute=59)
+    return dt
 
 
 class Engine:
@@ -55,7 +65,7 @@ class Engine:
         if DB_.ok:
             STATE.log("INFO", f"DB 就緒（{DB_.kind}）")
             DB_.trim()
-            saved = DB_.load_bars(600)
+            saved = DB_.load_bars(80000)
             with STATE.lock:
                 STATE.bars.extend(saved)
             for sg in reversed(DB_.load_signals(200)):
@@ -67,7 +77,39 @@ class Engine:
         BROKER.restore()
         threading.Thread(target=self._run, daemon=True, name="engine").start()
 
+    def _bar_timer(self):
+        """每秒檢查：現在的 1 分 K 若已過了結束時間 3 秒還沒被新 tick 收掉，主動收掉（時段結束用）。"""
+        while True:
+            time.sleep(1)
+            try:
+                b = self._cur_bar
+                if b is None:
+                    continue
+                end = datetime.strptime(b["ts"], "%Y-%m-%d %H:%M") + timedelta(minutes=1)
+                if b["ts"].endswith("13:44") or b["ts"].endswith("04:59"):
+                    end += timedelta(minutes=1)   # 收盤撮合在 13:45 / 05:00 才有成交
+                if now().replace(tzinfo=None) > end + timedelta(seconds=3):
+                    self._close_current_bar()
+            except Exception as e:
+                STATE.log("WARN", f"K 線計時器錯誤：{e!r}")
+
+    def _close_current_bar(self):
+        with STATE.lock:
+            closed, self._cur_bar = self._cur_bar, None
+            if closed is None:
+                return
+            if STATE.bars and STATE.bars[-1]["ts"] == closed["ts"]:
+                STATE.bars.pop()
+            STATE.bars.append(closed)
+            bars = list(STATE.bars)
+        DB_.upsert_bar(closed)
+        try:
+            PORTFOLIO.on_m1_close(bars, closed)
+        except Exception as e:
+            STATE.log("ERROR", f"策略錯誤：{e!r}")
+
     def _run(self):
+        threading.Thread(target=self._bar_timer, daemon=True, name="bar-timer").start()
         try:
             self._connect()
         except BaseException as e:   # 含 Rust panic
@@ -196,20 +238,29 @@ class Engine:
             for ts, o, h, l, c, v in zip(k.ts, k.Open, k.High, k.Low, k.Close, k.Volume):
                 # Shioaji 的 ts 已是台北時間（以 UTC 形式存），且標的是該分鐘的「結束」時間
                 # 轉成跟即時 K 一致的「起始分鐘」標籤
-                dt = datetime.utcfromtimestamp(ts / 1e9) - timedelta(minutes=1)
-                bars.append({"ts": dt.strftime("%Y-%m-%d %H:%M"), "open": float(o), "high": float(h),
-                             "low": float(l), "close": float(c), "volume": int(v), "src": "hist"})
+                dt = _norm_minute(datetime.utcfromtimestamp(ts / 1e9) - timedelta(minutes=1))
+                bar = {"ts": dt.strftime("%Y-%m-%d %H:%M"), "open": float(o), "high": float(h),
+                       "low": float(l), "close": float(c), "volume": int(v), "src": "hist"}
+                if bars and bars[-1]["ts"] == bar["ts"]:   # 13:45 收盤撮合併入 13:44
+                    b0 = bars[-1]
+                    b0["high"] = max(b0["high"], bar["high"]); b0["low"] = min(b0["low"], bar["low"])
+                    b0["close"] = bar["close"]; b0["volume"] += bar["volume"]
+                else:
+                    bars.append(bar)
             with STATE.lock:
                 merged = {b["ts"]: b for b in STATE.bars}
                 merged.update({b["ts"]: b for b in bars})
                 STATE.bars.clear()
-                STATE.bars.extend(sorted(merged.values(), key=lambda b: b["ts"])[-600:])
+                STATE.bars.extend(sorted(merged.values(), key=lambda b: b["ts"])[-80000:])
                 STATE.warmup_bars = len(bars)
                 STATE.warmup_error = None
                 if bars and not STATE.prev_close:
                     STATE.prev_close = bars[-1]["close"]
-            DB_.upsert_bars(bars[-400:])
-            STATE.log("INFO", f"暖機回補 1 分 K {len(bars)} 根（{start} ~ {end}）")
+            DB_.upsert_bars(bars)
+            STATE.log("INFO", f"暖機回補 1 分 K {len(bars)} 根（{start} ~ {end}），合計 {len(STATE.bars)} 根")
+            with STATE.lock:
+                allbars = list(STATE.bars)
+            PORTFOLIO.rebuild(allbars)
         except Exception as e:
             with STATE.lock:
                 STATE.warmup_error = repr(e)
@@ -280,15 +331,27 @@ class Engine:
                 STATE.day_low = min(STATE.day_low, price)
                 STATE.day_volume += vol
             self._aggregate(dt, price, vol)
+            try:
+                PORTFOLIO.on_tick(price)
+            except Exception as e:
+                STATE.log("ERROR", f"策略 tick 錯誤：{e!r}")
             BROKER.on_tick(price)
         except Exception as e:
             STATE.log("ERROR", f"tick 處理錯誤：{e!r}")
 
     def _aggregate(self, dt, price, vol):
-        minute = dt.strftime("%Y-%m-%d %H:%M")
+        minute = _norm_minute(dt.replace(tzinfo=None)).strftime("%Y-%m-%d %H:%M")
         closed = None
         if self._cur_bar is None or self._cur_bar["ts"] != minute:
             closed = self._cur_bar
+            with STATE.lock:
+                # 同一分鐘已被計時器收掉（收盤撮合），撿回來繼續累積
+                if STATE.bars and STATE.bars[-1]["ts"] == minute and STATE.bars[-1].get("src") == "live":
+                    self._cur_bar = dict(STATE.bars[-1])
+                    b = self._cur_bar
+                    b["high"] = max(b["high"], price); b["low"] = min(b["low"], price)
+                    b["close"] = price; b["volume"] += vol
+                    return
             self._cur_bar = {"ts": minute, "open": price, "high": price, "low": price,
                              "close": price, "volume": vol, "src": "live"}
         else:
@@ -307,7 +370,7 @@ class Engine:
                 bars = list(STATE.bars)
             DB_.upsert_bar(closed)
             try:
-                strategy.on_bar_close(bars)
+                PORTFOLIO.on_m1_close(bars, closed)
             except Exception as e:
                 STATE.log("ERROR", f"策略錯誤：{e!r}")
 

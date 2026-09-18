@@ -40,6 +40,16 @@
 
 `requirements.txt` 鎖 `shioaji>=1.7,<2`。1.7 是 Rust 重寫版，介面跟舊版不同（回呼掛在 `api` 上、tick 回呼只有一個參數、登入後要另外 `fetch_contracts()`），`engine.py` 兩種都能跑，會自動偵測。若之後想沿用舊專案的 1.5.x，改 requirements 即可。
 
+## 策略（多策略框架）
+
+`app/strategy_config.json`：每支策略的 enabled / minutes / lots / inputs，改完整包推上去。
+`app/strategies.py`：四支從 MultiCharts 移植的策略，逐行對照原 PowerLanguage。
+`app/el.py`：PowerLanguage 語意層（next bar stop/limit 掛單、逐 tick 觸價、maxpositionprofit、EntriesToday、setexitonclose、CheckDay）。
+`app/tf.py`：1 分 K → N 分 K / 時段 / 交易日 / 週，台指時段對齊。
+`app/portfolio.py`：各策略獨立帳本，淨部位才送下單層；啟動時用歷史 1 分 K 重播（同 MC 重算圖表）。
+
+啟動需要足夠歷史：`WARMUP_DAYS=45`（AvgRange(200) 在 60 分 K 約需 11 個交易日，週高低需要跨週）。
+
 ## 持久化 / 下單 / 告警
 
 **DB**：Zeabur 專案加一個 PostgreSQL 服務，把它的連線字串填到 `DATABASE_URL`。

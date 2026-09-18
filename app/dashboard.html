@@ -82,6 +82,12 @@
     <button id="btn-adopt" onclick="post('/api/adopt','確定把內部部位改成券商回報的數字？')">以券商為準</button>
   </div>
 
+  <h2>策略（各自帳本，淨部位才送券商）</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>策略</th><th>週期</th><th>MP</th><th>進場價</th><th>今日損益</th><th>最大浮盈</th><th>今日進場</th><th>最後 K</th><th>掛單</th></tr></thead>
+    <tbody id="st"><tr><td colspan="9" class="empty">重播中…</td></tr></tbody>
+  </table></div>
+
   <h2 id="orders-h">委託與成交</h2>
   <div class="scroll"><table>
     <thead><tr><th>時間</th><th>方向</th><th>口</th><th>狀態</th><th>成交</th><th>均價</th><th>原因</th></tr></thead>
@@ -157,6 +163,8 @@ async function tick(){
     b.style.display=msgs.length?'block':'none'; b.textContent=msgs.join('　|　'); b.className='banner'+(bad?' bad':'');
 
     $('kt').innerHTML=bars.length?bars.slice().reverse().map(k=>`<tr class="num"><td>${k.ts.slice(5)}</td><td>${k.open}</td><td>${k.high}</td><td>${k.low}</td><td class="${cls(k.close-k.open)}">${k.close}</td><td>${k.volume}</td><td>${k.src==='live'?'即時':'回補'}</td></tr>`).join(''):'<tr><td colspan="7" class="empty">尚無資料</td></tr>';
+    const pf=s.portfolio||{strategies:[]};
+    $('st').innerHTML=pf.strategies.length?pf.strategies.map(x=>`<tr class="num"><td>${x.name}${x.enabled?'':'（停用）'}</td><td>${x.minutes}分</td><td class="${x.mp>0?'up':x.mp<0?'down':''}">${x.mp>0?'多':x.mp<0?'空':'—'}</td><td>${x.entryprice?Math.round(x.entryprice):'—'}</td><td class="${cls(x.realized_today)}">${x.realized_today}</td><td>${x.mp?x.maxprofit_pts:'—'}</td><td>${x.entries_today}</td><td>${x.last_bar?x.last_bar.slice(5):'—'}</td><td style="text-align:left;white-space:normal;font-size:12px">${(x.orders||[]).map(o=>`${o.action} ${o.kind}${o.price?' '+Math.round(o.price):''}（${o.label}）`).join('<br>')||'—'}</td></tr>`).join('')+`<tr><td colspan="9" style="text-align:left;color:var(--dim)">淨部位 ${pf.net>0?'多':pf.net<0?'空':''}${Math.abs(pf.net)||0} 口${pf.ready?'':'　·　歷史重播中'}</td></tr>`:'<tr><td colspan="9" class="empty">尚無策略</td></tr>';
     const stc={filled:'st-ok',failed:'st-bad',cancelled:'st-warn',sent:'st-warn',sending:'st-warn',unknown:''};
     $('ot').innerHTML=orders.length?orders.map(o=>`<tr class="num"><td>${(o.t||'').slice(5)}</td><td class="${o.action==='Buy'?'up':'down'}">${o.action==='Buy'?'買':'賣'}</td><td>${o.qty}</td><td class="${stc[o.status]||''}">${o.status}</td><td>${o.filled_qty||0}</td><td>${o.avg_price||'—'}</td><td>${o.reason||''}${o.msg?' · '+o.msg:''}</td></tr>`).join(''):'<tr><td colspan="7" class="empty">尚無委託</td></tr>';
     $('signals').innerHTML=sig.length?sig.map(x=>`<div><span class="t">${x.t.slice(5)}</span><b class="${x.side==='多'?'up':x.side==='空'?'down':'flat'}">${x.side}</b> @ ${x.price}　${x.reason}</div>`).join(''):'<div class="empty">尚無訊號</div>';

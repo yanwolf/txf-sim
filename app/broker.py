@@ -25,7 +25,7 @@ from .state import STATE, in_session, now
 
 MODE = os.getenv("MODE", "signal").lower()
 LOTS = int(os.getenv("LOTS", "1"))
-MAX_POSITION = int(os.getenv("MAX_POSITION", "1"))
+MAX_POSITION = int(os.getenv("MAX_POSITION", "4"))
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT_PTS", "300"))   # 每口點數，0 = 關閉
 ORDER_TIMEOUT = int(os.getenv("ORDER_TIMEOUT", "15"))
 MAX_ORDER_FAILURES = int(os.getenv("MAX_ORDER_FAILURES", "2"))
@@ -60,6 +60,7 @@ class Broker:
         self._last_risk_check = 0.0
         self._last_reconcile = 0.0
         self._mismatch_streak = 0
+        self._deferred = None      # pending 時來的新目標，成交後補送
         STATE.mode = MODE
 
     # ------------------------------------------------------------ 初始化
@@ -132,32 +133,32 @@ class Broker:
 
     # ------------------------------------------------------------ 策略入口
     def set_target(self, sign, price, reason):
-        """sign: +1 多 / -1 空 / 0 空手。由策略在 K 棒收盤呼叫。"""
+        """單策略介面（保留相容）：sign +1/-1/0 × LOTS。"""
+        self.set_net(sign * LOTS, price, reason)
+
+    def set_net(self, net, price, reason):
+        """多策略介面：把券商部位調整成 net 口（正多負空）。"""
         self._roll_day()
-        target = max(-MAX_POSITION, min(MAX_POSITION, sign * LOTS))
+        target = max(-MAX_POSITION, min(MAX_POSITION, int(net)))
         with STATE.lock:
             pos = STATE.position
             if STATE.kill:
-                STATE.log("WARN", f"kill switch 開啟（{STATE.kill_reason}），忽略訊號 {reason}")
+                STATE.log("WARN", f"kill switch 開啟（{STATE.kill_reason}），忽略 {reason}（目標 {target}）")
                 return
             if STATE.strategy_halted:
-                STATE.log("WARN", f"策略已停（{STATE.strategy_halted}），忽略訊號 {reason}")
+                STATE.log("WARN", f"策略已停（{STATE.strategy_halted}），忽略 {reason}（目標 {target}）")
                 return
         delta = target - pos
         if delta == 0:
             return
-        side = "多" if target > 0 else "空" if target < 0 else "平"
-        STATE.add_signal(side, price, reason)
-        notify(f"訊號 {side} @ {price}  {reason}")
-
         if MODE == "signal":
             self._virtual_fill(target, price)
             return
         if self.pending:
-            STATE.log("WARN", f"前一張委託 {self.pending} 未完成，先不送新單")
+            STATE.log("WARN", f"前一張委託 {self.pending} 未完成，先不送新單（目標 {target}）")
+            self._deferred = (target, price, reason)
             return
         if SPLIT_FLIP and pos != 0 and target != 0 and (pos > 0) != (target > 0):
-            # 反手：先平掉舊部位，成交後再開新倉
             self._place(-pos, price, reason + "／平倉", octype="Cover",
                         then=(target, price, reason + "／新倉"))
         else:
@@ -167,10 +168,17 @@ class Broker:
     # ------------------------------------------------------------ 虛擬成交
     def _virtual_fill(self, target, price):
         with STATE.lock:
-            if STATE.position != 0 and STATE.position_price is not None:
-                STATE.virtual_pnl += (price - STATE.position_price) * STATE.position
+            pos, avg = STATE.position, STATE.position_price
+            if pos != 0 and avg is not None and (target == 0 or (target > 0) != (pos > 0) or abs(target) < abs(pos)):
+                closed = abs(pos) if (target == 0 or (target > 0) != (pos > 0)) else abs(pos) - abs(target)
+                STATE.virtual_pnl += (price - avg) * closed * (1 if pos > 0 else -1)
+            if target == 0:
+                STATE.position_price = None
+            elif pos == 0 or (target > 0) != (pos > 0):
+                STATE.position_price = price
+            elif abs(target) > abs(pos):
+                STATE.position_price = (avg * abs(pos) + price * (abs(target) - abs(pos))) / abs(target)
             STATE.position = target
-            STATE.position_price = price if target else None
         STATE.log("SIGNAL", f"虛擬成交 → 部位 {target} @ {price}")
         self.persist()
 
@@ -315,6 +323,9 @@ class Broker:
                 target, p2, r2 = nxt
                 threading.Thread(target=self._place, args=(target, p2, r2), kwargs={"octype": "New"},
                                  daemon=True).start()
+            elif rec["status"] == "filled" and self._deferred and not self.pending:
+                d, self._deferred = self._deferred, None
+                threading.Thread(target=self.set_net, args=d, daemon=True).start()
         STATE.log("FILL", f"成交 {action} {qty} @ {price} → 部位 {STATE.position} @ {STATE.position_price}")
         notify(f"成交 {action} {qty} @ {price}\n部位 {STATE.position} @ {STATE.position_price}  今日已實現 {STATE.realized_pnl:.0f} 點")
         self.persist()

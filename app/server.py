@@ -42,6 +42,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, STATE.recent_events())
         elif u.path == "/api/orders":
             self._send(200, STATE.recent_orders())
+        elif u.path == "/api/strategies":
+            from .portfolio import PORTFOLIO
+            self._send(200, PORTFOLIO.snapshot())
         else:
             self._send(404, {"error": "not found"})
 

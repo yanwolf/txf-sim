@@ -43,7 +43,7 @@ class State:
 
         self.usage = None             # api.usage() 結果
 
-        self.bars = deque(maxlen=600)    # 1 分 K，dict(ts, open, high, low, close, volume)
+        self.bars = deque(maxlen=80000)  # 1 分 K，dict(ts, open, high, low, close, volume)；約 60 個交易日
         self.signals = deque(maxlen=200)
         self.events = deque(maxlen=300)
 
@@ -131,6 +131,7 @@ class State:
                 "strategy_halted": self.strategy_halted,
                 "db": self.db,
                 "telegram": __import__("app.notify", fromlist=["enabled"]).enabled(),
+                "portfolio": __import__("app.portfolio", fromlist=["PORTFOLIO"]).PORTFOLIO.snapshot(),
                 "now": now().isoformat(timespec="seconds"),
                 "in_session": in_session(now()),
             }

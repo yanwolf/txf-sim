@@ -1,0 +1,84 @@
+{
+  "_說明": "每支策略：enabled 開關、minutes K線週期、lots 口數、inputs 參數（2026-09-19 依 MultiCharts 圖表設定）。改完整包推上去即可。",
+  "TMFF": {
+    "enabled": true,
+    "minutes": 60,
+    "lots": 1,
+    "inputs": {
+      "N": 30,
+      "BB": 2.4,
+      "SS": 0.1,
+      "SWing": 1,
+      "BLOSS": 125,
+      "BWIN": 300,
+      "SLOSS": 75,
+      "SWIN": 250,
+      "BMax": 200,
+      "BTB": 100,
+      "SMax": 100,
+      "STB": 150,
+      "TNw": 330
+    }
+  },
+  "AR_crossover_2025": {
+    "enabled": true,
+    "minutes": 60,
+    "lots": 1,
+    "inputs": {
+      "MAN": 15,
+      "ATRN": 35,
+      "ATRX": 0.1,
+      "ETD": 2,
+      "TN": 1245,
+      "LOSS": 55,
+      "WIN": 500,
+      "Twin": 200,
+      "Tstop": 100,
+      "TNw": 330
+    }
+  },
+  "GuYuan_2024": {
+    "enabled": true,
+    "minutes": 60,
+    "lots": 1,
+    "inputs": {
+      "N1": 3,
+      "N2": 3,
+      "N3": 5,
+      "HH": 10,
+      "LL": 10,
+      "LOSS": 100,
+      "WIN": 400,
+      "Twin": 30,
+      "Tstop": 300,
+      "TNw": 330
+    }
+  },
+  "GuYuan_2025": {
+    "enabled": true,
+    "minutes": 20,
+    "lots": 1,
+    "inputs": {
+      "HN": 25,
+      "N1": 0,
+      "N2": 3,
+      "N3": 50,
+      "MA1": 45,
+      "MA2": 175,
+      "ETD": 5,
+      "TN": 1325,
+      "LOSS": 50,
+      "WIN": 325,
+      "TNw": 430
+    }
+  },
+  "demo_ma": {
+    "enabled": false,
+    "minutes": 1,
+    "lots": 1,
+    "inputs": {
+      "FAST": 5,
+      "SLOW": 20
+    }
+  }
+}
