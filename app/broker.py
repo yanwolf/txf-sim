@@ -59,6 +59,7 @@ class Broker:
         self._seen_deals = set()
         self._last_risk_check = 0.0
         self._last_reconcile = 0.0
+        self._mismatch_streak = 0
         STATE.mode = MODE
 
     # ------------------------------------------------------------ 初始化
@@ -77,8 +78,15 @@ class Broker:
             self.day = kv.get("day")
             self._seen_deals = set(kv.get("seen_deals", []))
         for o in DB_.load_orders(50):
+            if o.get("status") in ("sent", "sending"):
+                # 重啟前沒等到終態的委託：標成未知，避免被當成進行中
+                o["status"] = "unknown"
+                o["msg"] = (o.get("msg") or "") + " 重啟前未回報"
+                DB_.upsert_order(o)
             STATE.orders.append(o)
             self.orders[o["id"]] = o
+            if o.get("broker_id"):
+                self.orders[o["broker_id"]] = o
         if kv:
             STATE.log("INFO", f"從 DB 還原：部位 {STATE.position} @ {STATE.position_price}，今日已實現 {STATE.realized_pnl}")
 
@@ -469,7 +477,7 @@ class Broker:
             self._order_failed(rec, "逾時無回報，已放棄此委託")
             notify("⚠️ 委託卡住已放棄，下一次訊號會重新對齊部位；請確認券商實際部位", key="stuck", cooldown=300)
 
-    def reconcile(self):
+    def reconcile(self, manual=False):
         try:
             positions = self.api.list_positions(self.account)
             code = STATE.order_contract or ""
@@ -482,28 +490,63 @@ class Broker:
                 rows.append(f"{pc} {d} {q}")
                 if pc != code:
                     continue
-                # 有些環境空單的 quantity 已是負數，避免負負得正
                 net += abs(q) if "Buy" in d else -abs(q)
             with STATE.lock:
                 mine = STATE.position
                 STATE.broker_position = net
-                STATE.reconcile_ok = (net == mine)
-            if net != mine:
-                STATE.log("ERROR", f"部位不一致：內部 {mine}，券商 {net}" + ("，改以券商為準" if RECONCILE_ADOPT else "，僅告警"))
-                STATE.log("WARN", f"券商原始部位回傳（{len(positions)} 筆）：{rows or '空'}")
-                try:
-                    STATE.log("WARN", f"repr: {[repr(p) for p in positions][:5]}")
-                except Exception:
-                    pass
-                notify(f"⚠️ 部位不一致：內部 {mine} / 券商 {net}", key="reconcile", cooldown=300)
-                if RECONCILE_ADOPT:
-                    with STATE.lock:
-                        STATE.position = net
-                        if net == 0:
-                            STATE.position_price = None
-                    self.persist()
+            if net == mine:
+                if self._mismatch_streak:
+                    STATE.log("INFO", f"部位已重新一致：{net}")
+                self._mismatch_streak = 0
+                with STATE.lock:
+                    STATE.reconcile_ok = True
+                    STATE.mismatch_min = 0
+                return
+            # 不一致：先查自己送過的委託有沒有事後成交（回報漏掉的情況）
+            self._refresh_orders()
+            with STATE.lock:
+                mine = STATE.position
+            if net == mine:
+                STATE.log("INFO", f"補記漏掉的成交後已一致：{net}")
+                self._mismatch_streak = 0
+                with STATE.lock:
+                    STATE.reconcile_ok = True
+                    STATE.mismatch_min = 0
+                return
+            self._mismatch_streak += 1
+            with STATE.lock:
+                STATE.reconcile_ok = False
+                STATE.mismatch_min = self._mismatch_streak
+            if self._mismatch_streak == 1 and not manual:
+                STATE.log("WARN", f"部位不一致：內部 {mine}，券商 {net}（觀察中，券商查詢可能延遲）")
+                return
+            if self._mismatch_streak == 3 or manual or self._mismatch_streak % 10 == 0:
+                STATE.log("ERROR", f"部位不一致已持續 {self._mismatch_streak} 分鐘：內部 {mine}，券商 {net}" + ("，改以券商為準" if RECONCILE_ADOPT else ""))
+                STATE.log("WARN", f"券商原始部位回傳：{rows or '空'}")
+                notify(f"⚠️ 部位不一致 {self._mismatch_streak} 分鐘：內部 {mine} / 券商 {net}", key="reconcile", cooldown=600)
+            if RECONCILE_ADOPT and self._mismatch_streak >= 3:
+                self.adopt_broker()
         except Exception as e:
             STATE.log("WARN", f"對帳失敗：{e!r}")
+
+    def adopt_broker(self):
+        """手動或自動：內部帳改成券商的數字。"""
+        with STATE.lock:
+            net = STATE.broker_position
+            if net is None:
+                return
+            old = STATE.position
+            STATE.position = net
+            if net == 0:
+                STATE.position_price = None
+            elif STATE.position_price is None:
+                STATE.position_price = STATE.last_price
+            STATE.reconcile_ok = True
+            STATE.mismatch_min = 0
+        self._mismatch_streak = 0
+        STATE.log("WARN", f"內部部位 {old} → 改為券商的 {net}")
+        notify(f"部位已以券商為準：{old} → {net}")
+        self.persist()
 
     def _roll_day(self):
         """跨交易日（夜盤 05:00 收後）重置今日損益與 kill（僅虧損上限造成的）。"""

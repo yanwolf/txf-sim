@@ -79,6 +79,7 @@
     <button id="btn-flat" class="danger" onclick="post('/api/flat','確定用市價平掉目前部位？')">全部平倉</button>
     <button id="btn-resume" onclick="post('/api/resume')">恢復</button>
     <button onclick="post('/api/reconcile')">立即對帳</button>
+    <button id="btn-adopt" onclick="post('/api/adopt','確定把內部部位改成券商回報的數字？')">以券商為準</button>
   </div>
 
   <h2 id="orders-h">委託與成交</h2>
@@ -133,11 +134,12 @@ async function tick(){
     $('pos').textContent=sigMode
       ? `${s.position>0?'多'+s.position:s.position<0?'空'+(-s.position):'無'} / ${s.virtual_pnl}`
       : `${s.position>0?'多'+s.position:s.position<0?'空'+(-s.position):'無'}${s.position_price?' @ '+s.position_price:''} / ${s.realized_pnl} + ${s.unrealized_pnl}`;
-    $('bpos').innerHTML=sigMode?'—（訊號模式）':(s.broker_position==null?'尚未對帳':`${s.broker_position} <span class="${s.reconcile_ok?'st-ok':'st-bad'}">${s.reconcile_ok?'一致':'不一致'}</span>`);
+    $('bpos').innerHTML=sigMode?'—（訊號模式）':(s.broker_position==null?'尚未對帳':`${s.broker_position} <span class="${s.reconcile_ok?'st-ok':(s.mismatch_min>=3?'st-bad':'st-warn')}">${s.reconcile_ok?'一致':(s.mismatch_min>=3?'不一致 '+s.mismatch_min+' 分':'不一致（觀察中）')}</span>`);
     $('ocode').textContent=s.order_contract||'—';
     $('infra').innerHTML=`<span class="${s.db&&s.db.ok?'st-ok':'st-warn'}">${s.db?(s.db.ok?s.db.kind:'離線'):'—'}</span> / <span class="${s.telegram?'st-ok':'st-warn'}">${s.telegram?'已設定':'未設定'}</span>`;
     $('btn-kill').disabled=s.kill; $('btn-resume').disabled=!(s.kill||s.strategy_halted);
     $('btn-flat').disabled=!s.position;
+    $('btn-adopt').disabled=!(s.reconcile_ok===false&&s.broker_position!=null);
     $('usage').textContent=s.usage?`${s.usage.bytes_mb} / ${s.usage.limit_mb} MB，連線 ${s.usage.connections}`:'—';
     $('logins').textContent=`${s.login_count}（${s.last_login_at?s.last_login_at.slice(11,19):'—'}）`;
     $('deliv').textContent=s.contract?s.contract.delivery_date:'—';
@@ -147,7 +149,7 @@ async function tick(){
     const b=$('banner'); const msgs=[]; let bad=false;
     if(s.kill){msgs.push('kill switch 開啟：'+(s.kill_reason||''));bad=true;}
     if(s.strategy_halted){msgs.push('策略已停止：'+s.strategy_halted);bad=true;}
-    if(s.reconcile_ok===false){msgs.push('內部部位與券商不一致');bad=true;}
+    if(s.reconcile_ok===false&&s.mismatch_min>=3){msgs.push('內部部位與券商不一致已 '+s.mismatch_min+' 分鐘，確認後可按「以券商為準」');bad=true;}
     if(s.pending_order) msgs.push('委託 '+s.pending_order+' 進行中');
     if(s.last_login_error) msgs.push('登入失敗：'+s.last_login_error);
     if(s.warmup_error) msgs.push('暖機回補失敗：'+s.warmup_error);
@@ -155,7 +157,7 @@ async function tick(){
     b.style.display=msgs.length?'block':'none'; b.textContent=msgs.join('　|　'); b.className='banner'+(bad?' bad':'');
 
     $('kt').innerHTML=bars.length?bars.slice().reverse().map(k=>`<tr class="num"><td>${k.ts.slice(5)}</td><td>${k.open}</td><td>${k.high}</td><td>${k.low}</td><td class="${cls(k.close-k.open)}">${k.close}</td><td>${k.volume}</td><td>${k.src==='live'?'即時':'回補'}</td></tr>`).join(''):'<tr><td colspan="7" class="empty">尚無資料</td></tr>';
-    const stc={filled:'st-ok',failed:'st-bad',cancelled:'st-warn',sent:'st-warn',sending:'st-warn'};
+    const stc={filled:'st-ok',failed:'st-bad',cancelled:'st-warn',sent:'st-warn',sending:'st-warn',unknown:''};
     $('ot').innerHTML=orders.length?orders.map(o=>`<tr class="num"><td>${(o.t||'').slice(5)}</td><td class="${o.action==='Buy'?'up':'down'}">${o.action==='Buy'?'買':'賣'}</td><td>${o.qty}</td><td class="${stc[o.status]||''}">${o.status}</td><td>${o.filled_qty||0}</td><td>${o.avg_price||'—'}</td><td>${o.reason||''}${o.msg?' · '+o.msg:''}</td></tr>`).join(''):'<tr><td colspan="7" class="empty">尚無委託</td></tr>';
     $('signals').innerHTML=sig.length?sig.map(x=>`<div><span class="t">${x.t.slice(5)}</span><b class="${x.side==='多'?'up':x.side==='空'?'down':'flat'}">${x.side}</b> @ ${x.price}　${x.reason}</div>`).join(''):'<div class="empty">尚無訊號</div>';
     $('events').innerHTML=ev.map(e=>`<div class="${e.level}"><span class="t">${e.t.slice(5)}</span>${e.msg}</div>`).join('');

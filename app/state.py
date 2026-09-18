@@ -53,6 +53,7 @@ class State:
         self.realized_pnl = 0.0       # 下單模式：今日已實現損益（點/口）
         self.broker_position = None   # 券商回報的部位
         self.reconcile_ok = None
+        self.mismatch_min = 0
         self.order_contract = None    # 實際下單用的月合約代碼
         self.pending_order = None
         self.kill = False
@@ -122,6 +123,7 @@ class State:
                     if self.position and self.position_price is not None and self.last_price is not None else 0,
                 "broker_position": self.broker_position,
                 "reconcile_ok": self.reconcile_ok,
+                "mismatch_min": self.mismatch_min,
                 "order_contract": self.order_contract,
                 "pending_order": self.pending_order,
                 "kill": self.kill,

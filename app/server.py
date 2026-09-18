@@ -54,7 +54,9 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/flat":
             BROKER.flatten("手動平倉")
         elif u.path == "/api/reconcile":
-            BROKER.reconcile()
+            BROKER.reconcile(manual=True)
+        elif u.path == "/api/adopt":
+            BROKER.adopt_broker()
         else:
             self._send(404, {"error": "not found"}); return
         self._send(200, {"ok": True})

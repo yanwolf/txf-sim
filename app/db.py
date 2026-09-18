@@ -21,7 +21,7 @@ SCHEMA = [
         id {SERIAL}, t TEXT, level TEXT, msg TEXT)""",
     """CREATE TABLE IF NOT EXISTS orders (
         id TEXT PRIMARY KEY, t TEXT, code TEXT, action TEXT, qty INTEGER, price REAL,
-        status TEXT, filled_qty INTEGER, avg_price REAL, msg TEXT, reason TEXT, mode TEXT)""",
+        status TEXT, filled_qty INTEGER, avg_price REAL, msg TEXT, reason TEXT, mode TEXT, broker_id TEXT)""",
     """CREATE TABLE IF NOT EXISTS fills (
         id {SERIAL}, t TEXT, order_id TEXT, code TEXT, action TEXT, price REAL, qty INTEGER)""",
     """CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)""",
@@ -52,6 +52,10 @@ class DB:
                 serial = "SERIAL PRIMARY KEY" if self.kind == "postgres" else "INTEGER PRIMARY KEY AUTOINCREMENT"
                 for stmt in SCHEMA:
                     self._exec(stmt.replace("{SERIAL}", serial))
+                try:   # 舊表補欄位
+                    self._exec("ALTER TABLE orders ADD COLUMN broker_id TEXT")
+                except Exception:
+                    pass
                 self.ok, self.error = True, None
             except Exception as e:
                 self.ok, self.error = False, repr(e)
@@ -104,7 +108,7 @@ class DB:
         self.run("INSERT INTO events (t,level,msg) VALUES (?,?,?)", (e["t"], e["level"], e["msg"]))
 
     def upsert_order(self, o):
-        cols = ["id", "t", "code", "action", "qty", "price", "status", "filled_qty", "avg_price", "msg", "reason", "mode"]
+        cols = ["id", "t", "code", "action", "qty", "price", "status", "filled_qty", "avg_price", "msg", "reason", "mode", "broker_id"]
         vals = tuple(o.get(c) for c in cols)
         if self.kind == "postgres":
             sets = ",".join(f"{c}=EXCLUDED.{c}" for c in cols[1:])
@@ -144,9 +148,9 @@ class DB:
         return [{"t": r[0], "side": r[1], "price": r[2], "reason": r[3]} for r in rows]
 
     def load_orders(self, n=100):
-        rows = self.run("SELECT id,t,code,action,qty,price,status,filled_qty,avg_price,msg,reason,mode "
+        rows = self.run("SELECT id,t,code,action,qty,price,status,filled_qty,avg_price,msg,reason,mode,broker_id "
                         "FROM orders ORDER BY t DESC LIMIT ?", (n,), fetch=True) or []
-        keys = ["id", "t", "code", "action", "qty", "price", "status", "filled_qty", "avg_price", "msg", "reason", "mode"]
+        keys = ["id", "t", "code", "action", "qty", "price", "status", "filled_qty", "avg_price", "msg", "reason", "mode", "broker_id"]
         return [dict(zip(keys, r)) for r in rows]
 
     def load_fills_today(self, day):
