@@ -596,7 +596,7 @@ class Broker:
         else:
             with self.lock:
                 self.pending = None   # 平倉優先，蓋掉卡住的 pending
-            self._place(-pos, price, reason)
+            self._place(-pos, price, reason, octype="Cover")
 
 
 BROKER = Broker()
