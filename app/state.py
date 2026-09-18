@@ -150,6 +150,16 @@ class State:
             return list(self.orders)
 
 
+def session_remaining_min(dt):
+    """距本時段收盤還有幾分鐘；非交易時段回 0。"""
+    if not in_session(dt):
+        return 0
+    m = dt.hour * 60 + dt.minute
+    if 8 * 60 + 45 <= m <= 13 * 60 + 45:
+        return 13 * 60 + 45 - m
+    return (5 * 60 - m) if m < 5 * 60 else (24 * 60 - m + 5 * 60)
+
+
 def in_session(dt):
     """台指期交易時段：日盤 08:45–13:45，夜盤 15:00–翌日 05:00。"""
     if dt.weekday() >= 5 and not (dt.weekday() == 5 and dt.hour < 5):

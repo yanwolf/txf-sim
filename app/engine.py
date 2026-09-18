@@ -11,7 +11,7 @@ from . import strategy
 from .broker import BROKER, MODE
 from .db import DB_
 from .notify import notify
-from .state import STATE, TZ, in_session, now
+from .state import STATE, TZ, in_session, now, session_remaining_min
 
 API_KEY = os.getenv("SHIOAJI_API_KEY", "")
 SECRET_KEY = os.getenv("SHIOAJI_SECRET_KEY", "")
@@ -322,7 +322,8 @@ class Engine:
         if int(time.time()) % 300 < 30:
             self._refresh_usage()
         ref = max(STATE.last_tick_ts, self._login_ts)
-        if in_session(now()) and STATE.subscribed and time.time() - ref > STALE_SECONDS:
+        n = now()
+        if in_session(n) and session_remaining_min(n) > 5 and STATE.subscribed and time.time() - ref > STALE_SECONDS:
             STATE.log("WARN", f"盤中 {STALE_SECONDS} 秒沒有 tick，重新連線")
             notify(f"⚠️ 盤中 {STALE_SECONDS} 秒沒有 tick，重新連線", key="stale", cooldown=600)
             with STATE.lock:

@@ -408,23 +408,66 @@ class Broker:
             oid = self.pending
         if oid:
             rec = self.orders.get(oid)
-            if rec and time.time() - rec.get("sent_at", 0) > ORDER_TIMEOUT:
-                STATE.log("WARN", f"委託 {oid} 逾時 {ORDER_TIMEOUT} 秒未回報，主動查詢")
-                self._refresh_orders()
+            age = time.time() - rec.get("sent_at", 0) if rec else 0
+            if rec and age > ORDER_TIMEOUT * 4:
+                # 卡超過 60 秒：主動刪單、記失敗、放行後面的訊號
+                STATE.log("ERROR", f"委託 {oid} 卡住 {int(age)} 秒，主動刪單並標記失敗")
+                self._cancel_stuck(rec)
+            elif rec and age > ORDER_TIMEOUT:
+                STATE.log("WARN", f"委託 {oid} 逾時 {int(age)} 秒未回報，主動查詢")
+                self._refresh_orders(oid)
         # 對帳
         if time.time() - self._last_reconcile > 60:
             self._last_reconcile = time.time()
             self.reconcile()
 
-    def _refresh_orders(self):
+    def _find_trade(self, rec):
+        ids = {rec.get("id"), rec.get("broker_id")}
+        for tr in self.api.list_trades():
+            tid = getattr(tr.order, "id", None) or getattr(tr.order, "seqno", None)
+            if tid in ids:
+                return tr
+        return None
+
+    def _refresh_orders(self, oid=None):
         try:
             self.api.update_status(self.account)
+            rec = self.orders.get(oid) if oid else None
+            if rec:
+                tr = self._find_trade(rec)
+                if tr is None:
+                    STATE.log("WARN", f"券商委託清單查無 {rec.get('broker_id') or oid}")
+                    return
+                st = getattr(tr.status, "status", "")
+                deals = getattr(tr.status, "deals", None) or []
+                STATE.log("INFO", f"券商回報 {rec.get('broker_id')}：{st} 成交 {len(deals)} 筆 {getattr(tr.status, 'msg', '')}")
+                self._sync_trade(tr)
+                return
             for tr in self.api.list_trades():
-                oid = getattr(tr.order, "id", None) or getattr(tr.order, "seqno", None)
-                if oid in self.orders:
+                tid = getattr(tr.order, "id", None) or getattr(tr.order, "seqno", None)
+                if tid in self.orders:
                     self._sync_trade(tr)
         except Exception as e:
             STATE.log("WARN", f"查詢委託失敗：{e!r}")
+
+    def _cancel_stuck(self, rec):
+        try:
+            self.api.update_status(self.account)
+            tr = self._find_trade(rec)
+            if tr is not None:
+                self._sync_trade(tr)              # 可能其實已成交，先同步一次
+                if rec["status"] in ("filled", "cancelled", "failed"):
+                    return
+                try:
+                    self.api.cancel_order(tr)
+                    STATE.log("WARN", f"已送出刪單 {rec.get('broker_id')}")
+                except Exception as e:
+                    STATE.log("WARN", f"刪單失敗：{e!r}")
+        except Exception as e:
+            STATE.log("WARN", f"處理卡單失敗：{e!r}")
+        if rec["status"] not in ("filled", "cancelled", "failed"):
+            self._order_failed(rec, "逾時無回報，已放棄此委託")
+            notify("⚠️ 委託卡住已放棄，下一次訊號會重新對齊部位；請確認券商實際部位", key="stuck", cooldown=300)
 
     def reconcile(self):
         try:
