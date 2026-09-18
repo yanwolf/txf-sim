@@ -1,7 +1,8 @@
 {
-  "_說明": "每支策略：enabled 開關、minutes K線週期、lots 口數、inputs 參數（2026-09-19 依 MultiCharts 圖表設定）。改完整包推上去即可。",
+  "_說明": "每支策略：enabled 開關、mode（live 計入淨部位並下單 / paper 只跑帳本做實驗）、minutes K線週期、lots 口數、inputs 參數。改完整包推上去即可。",
   "TMFF": {
     "enabled": true,
+    "mode": "live",
     "minutes": 60,
     "lots": 1,
     "inputs": {
@@ -22,6 +23,7 @@
   },
   "AR_crossover_2025": {
     "enabled": true,
+    "mode": "live",
     "minutes": 60,
     "lots": 1,
     "inputs": {
@@ -39,6 +41,7 @@
   },
   "GuYuan_2024": {
     "enabled": true,
+    "mode": "live",
     "minutes": 60,
     "lots": 1,
     "inputs": {
@@ -56,6 +59,7 @@
   },
   "GuYuan_2025": {
     "enabled": true,
+    "mode": "live",
     "minutes": 20,
     "lots": 1,
     "inputs": {
@@ -74,6 +78,7 @@
   },
   "demo_ma": {
     "enabled": false,
+    "mode": "paper",
     "minutes": 1,
     "lots": 1,
     "inputs": {

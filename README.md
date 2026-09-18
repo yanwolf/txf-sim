@@ -42,13 +42,20 @@
 
 ## 策略（多策略框架）
 
-`app/strategy_config.json`：每支策略的 enabled / minutes / lots / inputs，改完整包推上去。
+`app/strategy_config.json`：每支策略的 enabled / mode / minutes / lots / inputs，改完整包推上去。
+`mode: "paper"` = 實驗策略：照跑帳本、訊號、Telegram，但不計入送券商的淨部位；要上線改 `"live"`。
+新策略：在 `app/strategies.py` 加一個 `Strategy` 子類別（實作 `on_bar`，並加進 `REGISTRY`），config 加一段即可。
 `app/strategies.py`：四支從 MultiCharts 移植的策略，逐行對照原 PowerLanguage。
 `app/el.py`：PowerLanguage 語意層（next bar stop/limit 掛單、逐 tick 觸價、maxpositionprofit、EntriesToday、setexitonclose、CheckDay）。
 `app/tf.py`：1 分 K → N 分 K / 時段 / 交易日 / 週，台指時段對齊。
 `app/portfolio.py`：各策略獨立帳本，淨部位才送下單層；啟動時用歷史 1 分 K 重播（同 MC 重算圖表）。
 
 啟動需要足夠歷史：`WARMUP_DAYS=45`（AvgRange(200) 在 60 分 K 約需 11 個交易日，週高低需要跨週）。
+
+## 儀表板設定頁
+
+「設定」分頁可改每支策略的啟用 / live-paper / K 線週期 / 口數 / 全部參數（含中文說明），儲存後寫進 DB、立刻重載並重播，不用推程式。
+DB 裡的設定優先於 `strategy_config.json`。設 `DASHBOARD_PASSWORD` 後，儲存與操作按鈕都要先在設定頁登入。
 
 ## 持久化 / 下單 / 告警
 

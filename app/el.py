@@ -44,6 +44,8 @@ class Order:
 
 class Strategy:
     name = "base"
+    desc = ""
+    doc = {}
     minutes = 60
     lots = 1
     inputs = {}
@@ -52,6 +54,7 @@ class Strategy:
         self.minutes = int(cfg.get("minutes", self.minutes))
         self.lots = int(cfg.get("lots", self.lots))
         self.enabled = bool(cfg.get("enabled", True))
+        self.mode = cfg.get("mode", "live")        # live：計入淨部位；paper：只跑帳本、不下單
         self.p = dict(self.inputs)
         self.p.update(cfg.get("inputs", {}))
         # 帳本
@@ -334,11 +337,11 @@ class Strategy:
         self.last_signal = s.get("last_signal")
 
     def snapshot(self):
-        return {"name": self.name, "minutes": self.minutes, "lots": self.lots, "enabled": self.enabled,
+        return {"name": self.name, "minutes": self.minutes, "lots": self.lots, "enabled": self.enabled, "mode": self.mode,
                 "mp": self.mp, "entryprice": self.entryprice, "maxprofit_pts": round(self.maxprofit_pts, 1),
                 "entries_today": self.entries_today, "realized_today": round(self.realized_today, 1),
                 "trades_today": self.trades_today, "last_bar": self.last_bar_ts, "last_signal": self.last_signal,
                 "exit_on_close": self.exit_on_close, "bars": len(self.bars),
                 "orders": [{"kind": o.kind, "action": o.action, "price": o.price, "label": o.label}
                            for o in self.orders if self._valid(o)],
-                "inputs": self.p}
+                "inputs": self.p, "doc": self.doc, "desc": self.desc}

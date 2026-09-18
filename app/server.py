@@ -1,6 +1,8 @@
 """stdlib HTTP 伺服器：儀表板 + JSON API。"""
+import hmac
 import json
 import os
+import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -9,6 +11,14 @@ from .broker import BROKER
 from .state import STATE
 
 HTML = (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
+PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+TOKENS = set()
+
+
+def _authed(handler):
+    if not PASSWORD:
+        return True
+    return handler.headers.get("X-Token", "") in TOKENS
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -45,11 +55,38 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/strategies":
             from .portfolio import PORTFOLIO
             self._send(200, PORTFOLIO.snapshot())
+        elif u.path == "/api/config":
+            from .portfolio import PORTFOLIO
+            self._send(200, {"protected": bool(PASSWORD), "authed": _authed(self), "strategies": PORTFOLIO.config_view()})
+        elif u.path == "/api/auth":
+            self._send(200, {"protected": bool(PASSWORD), "authed": _authed(self)})
         else:
             self._send(404, {"error": "not found"})
 
+    def _body(self):
+        n = int(self.headers.get("Content-Length", "0") or 0)
+        try:
+            return json.loads(self.rfile.read(n) or b"{}") if n else {}
+        except Exception:
+            return {}
+
     def do_POST(self):
         u = urlparse(self.path)
+        if u.path == "/api/login":
+            body = self._body()
+            if PASSWORD and hmac.compare_digest(str(body.get("password", "")), PASSWORD):
+                t = secrets.token_hex(16); TOKENS.add(t)
+                self._send(200, {"ok": True, "token": t}); return
+            if not PASSWORD:
+                self._send(200, {"ok": True, "token": ""}); return
+            self._send(401, {"ok": False, "error": "密碼錯誤"}); return
+        if not _authed(self):
+            self._send(401, {"ok": False, "error": "需要密碼"}); return
+        if u.path == "/api/config":
+            from .portfolio import PORTFOLIO
+            body = self._body()
+            PORTFOLIO.apply_config(body.get("strategies", {}))
+            self._send(200, {"ok": True}); return
         if u.path == "/api/kill":
             BROKER.kill("手動")
         elif u.path == "/api/resume":

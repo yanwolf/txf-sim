@@ -8,7 +8,13 @@ from .el import Strategy, TICKSIZE
 class TMFF(Strategy):
     """sa_a21TMFF：多空。均線±平均振幅過濾 + 日線三段連漲/連跌 + 前高/前低 stop 進場。"""
     name = "TMFF"
+    desc = "多空。收盤站上/跌破 MA(N)±AvgRange(200)×倍數，且日線三段連漲/連跌，前高/前低 stop 進場"
     minutes = 60
+    doc = dict(N="均線期數", BB="多方過濾：AvgRange(200) 的倍數", SS="空方過濾：AvgRange(200) 的倍數",
+               SWing="SwingHigh/Low 左右各幾根", BLOSS="多單停損點數", BWIN="多單停利點數",
+               SLOSS="空單停損點數", SWIN="空單停利點數", BMax="多單啟動移動停利的最大浮盈",
+               BTB="多單移動停利回吐點數", SMax="空單啟動移動停利的最大浮盈", STB="空單移動停利回吐點數",
+               TNw="週六幾點後不留單（HHMM）")
     inputs = dict(N=5, BB=50, SS=50, SWing=3, BLOSS=40, BWIN=500, SLOSS=40, SWIN=500,
                   BMax=50, BTB=100, SMax=50, STB=100, TNw=430)
 
@@ -63,7 +69,11 @@ class TMFF(Strategy):
 class ARCrossover2025(Strategy):
     """sb_b21AR_crossover_2025：只做多。H 上穿 MA(H)+AvgRange*ATRX 市價進場。"""
     name = "AR_crossover_2025"
+    desc = "只做多。最高價上穿 MA(H)+AvgRange×倍數 市價進場，每日最多 ETD 次"
     minutes = 60
+    doc = dict(MAN="最高價均線期數", ATRN="AvgRange 期數", ATRX="AvgRange 倍數", ETD="每日最多進場次數",
+               TN="結算日幾點出場（HHMM）", LOSS="停損點數", WIN="停利點數", Twin="啟動移動停利的最大浮盈",
+               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）")
     inputs = dict(MAN=20, ATRN=50, ATRX=1, ETD=2, TN=1245, LOSS=100, WIN=500, Twin=200, Tstop=200, TNw=430)
 
     def on_bar(self):
@@ -93,7 +103,11 @@ class ARCrossover2025(Strategy):
 class GuYuan2024(Strategy):
     """sb_b21GuYuan_2024：只做多。週高/時段收/區間中值合成價，N 根最高 stop 進場，N 根最低 stop 出場。"""
     name = "GuYuan_2024"
+    desc = "只做多。(週高+時段收+區間中值)/3 合成價位，H 站上 → N 根最高 stop 進場；L 跌破 → N 根最低 stop 出場"
     minutes = 60
+    doc = dict(N1="幾週前的週高/週低", N2="幾個時段前的收盤", N3="區間中值的期數", HH="進場：幾根最高價",
+               LL="出場：幾根最低價", LOSS="停損點數", WIN="停利點數", Twin="啟動移動停利的最大浮盈",
+               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）")
     inputs = dict(N1=1, N2=1, N3=1, HH=10, LL=10, LOSS=50, WIN=250, Twin=50, Tstop=200, TNw=430)
 
     def on_bar(self):
@@ -126,7 +140,11 @@ class GuYuan2024(Strategy):
 class GuYuan2025(Strategy):
     """sb_b21GuYuan_2025：只做多。20 分 K，加均線多頭排列與每日進場次數限制。"""
     name = "GuYuan_2025"
+    desc = "只做多。合成價位 + 均線多頭排列（MA1>MA2），N 根最高 stop 進場，每日最多 ETD 次"
     minutes = 20
+    doc = dict(HN="進場：幾根最高價", N1="幾週前的週高（0=本週）", N2="幾天前的日收盤（0=今天）",
+               N3="區間中值的期數", MA1="短均線期數", MA2="長均線期數", ETD="每日最多進場次數",
+               TN="結算日幾點出場（HHMM）", LOSS="停損點數", WIN="停利點數", TNw="週六幾點後不留單（HHMM）")
     inputs = dict(HN=20, N1=0, N2=0, N3=0, MA1=1, MA2=1, ETD=5, TN=1325, LOSS=100, WIN=500, TNw=430)
 
     def on_bar(self):
@@ -152,7 +170,9 @@ class GuYuan2025(Strategy):
 class DemoMA(Strategy):
     """示範：1 分 K 均線交叉（之前那支），預設關閉。"""
     name = "demo_ma"
+    desc = "示範：1 分 K 均線交叉，多空"
     minutes = 1
+    doc = dict(FAST="短均線", SLOW="長均線")
     inputs = dict(FAST=5, SLOW=20)
 
     def on_bar(self):

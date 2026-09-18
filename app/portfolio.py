@@ -33,23 +33,87 @@ class Portfolio:
         self.load_config()
 
     # ------------------------------------------------------------ 設定
-    def load_config(self):
+    def file_config(self):
         try:
-            cfg = json.load(open(CONFIG_PATH, encoding="utf-8"))
+            return json.load(open(CONFIG_PATH, encoding="utf-8"))
         except Exception as e:
             STATE.log("ERROR", f"strategy_config.json 讀取失敗：{e!r}")
-            cfg = {}
+            return {}
+
+    def effective_config(self):
+        """檔案設定 + DB 覆蓋（儀表板存的）。"""
+        cfg = {k: v for k, v in self.file_config().items() if not k.startswith("_")}
+        over = DB_.get_kv("strategy_config") or {}
+        for name, o in over.items():
+            base = dict(cfg.get(name, {}))
+            base.update({k: v for k, v in o.items() if k != "inputs"})
+            inp = dict(base.get("inputs", {}))
+            inp.update(o.get("inputs", {}))
+            base["inputs"] = inp
+            cfg[name] = base
+        return cfg
+
+    def load_config(self):
+        cfg = self.effective_config()
         self.strategies = []
+        self.all_strategies = []
         for name, cls in REGISTRY.items():
             c = cfg.get(name, {})
             s = cls(c)
             s.log = STATE.log
+            self.all_strategies.append(s)
             if c.get("enabled", name != "demo_ma"):
                 self.strategies.append(s)
         self.by_tf = {}
         for s in self.strategies:
             self.by_tf.setdefault(s.minutes, []).append(s)
-        STATE.log("INFO", "策略：" + "、".join(f"{s.name}({s.minutes}分,{s.lots}口)" for s in self.strategies))
+        STATE.log("INFO", "策略：" + "、".join(f"{s.name}({s.minutes}分,{s.lots}口{'，實驗' if s.mode == 'paper' else ''})" for s in self.strategies))
+
+    def config_view(self):
+        """給設定頁：每支（含停用的）目前設定 + 參數說明。"""
+        cfg = self.effective_config()
+        out = []
+        for name, cls in REGISTRY.items():
+            c = cfg.get(name, {})
+            inputs = dict(cls.inputs); inputs.update(c.get("inputs", {}))
+            out.append({"name": name, "desc": cls.desc, "doc": cls.doc,
+                        "enabled": bool(c.get("enabled", name != "demo_ma")), "mode": c.get("mode", "live"),
+                        "minutes": int(c.get("minutes", cls.minutes)), "lots": int(c.get("lots", cls.lots)),
+                        "inputs": inputs, "defaults": dict(cls.inputs)})
+        return out
+
+    def apply_config(self, new_cfg):
+        """儀表板儲存：寫 DB、重載策略、背景重播。"""
+        clean = {}
+        for name, c in new_cfg.items():
+            if name not in REGISTRY:
+                continue
+            cls = REGISTRY[name]
+            inp = {}
+            for k, v in (c.get("inputs") or {}).items():
+                if k in cls.inputs:
+                    try:
+                        fv = float(v)
+                        inp[k] = int(fv) if fv.is_integer() else fv
+                    except Exception:
+                        pass
+            clean[name] = {"enabled": bool(c.get("enabled", True)), "mode": "paper" if c.get("mode") == "paper" else "live",
+                           "minutes": max(1, int(c.get("minutes", cls.minutes))), "lots": max(1, int(c.get("lots", cls.lots))),
+                           "inputs": inp}
+        DB_.set_kv("strategy_config", clean)
+        STATE.log("INFO", "策略設定已更新，重新載入並重播")
+        notify("策略設定已從儀表板更新，重播中")
+        def _reload():
+            with self.lock:
+                self.ready = False
+                self.load_config()
+                self.last_done_ts = {}
+                self.first_tick = {}
+            with STATE.lock:
+                m1 = list(STATE.bars)
+            self.rebuild(m1)
+        threading.Thread(target=_reload, daemon=True).start()
+        return clean
 
     # ------------------------------------------------------------ 資料
     def _context(self, m1):
@@ -64,9 +128,10 @@ class Portfolio:
         """用歷史 1 分 K 從頭重播所有策略。"""
         with self.lock:
             for s in self.strategies:
-                s.__init__({"minutes": s.minutes, "lots": s.lots, "inputs": s.p, "enabled": s.enabled})
+                s.__init__({"minutes": s.minutes, "lots": s.lots, "inputs": s.p, "enabled": s.enabled, "mode": s.mode})
                 s.log = STATE.log
             if not m1:
+                self.ready = True
                 return
             sessions, days, weeks, trading_days = self._context(m1)
             tfbars = {m: tf.build_bars(m1, m) for m in self.by_tf}
@@ -150,14 +215,16 @@ class Portfolio:
 
     def _fill(self, s, action, price, label):
         side = {"buy": "多", "sellshort": "空", "sell": "平多", "buytocover": "平空"}[action]
-        STATE.add_signal(side, price, f"[{s.name}] {label}")
-        STATE.log("SIGNAL", f"[{s.name}] {side} @ {price:.0f} {label} → MP={s.mp}")
-        notify(f"[{s.name}] {side} @ {price:.0f} {label}")
-        self._send_net(price, f"[{s.name}] {label}")
+        tag = f"[{s.name}{'·實驗' if s.mode == 'paper' else ''}]"
+        STATE.add_signal(side, price, f"{tag} {label}")
+        STATE.log("SIGNAL", f"{tag} {side} @ {price:.0f} {label} → MP={s.mp}")
+        notify(f"{tag} {side} @ {price:.0f} {label}")
+        if s.mode != "paper":
+            self._send_net(price, f"[{s.name}] {label}")
         self._persist()
 
     def net(self):
-        return sum(s.mp * s.lots for s in self.strategies)
+        return sum(s.mp * s.lots for s in self.strategies if s.mode != "paper")
 
     def _send_net(self, price, reason):
         BROKER.set_net(self.net(), price, reason)
