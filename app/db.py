@@ -97,8 +97,34 @@ class DB:
                      (b["ts"], b["open"], b["high"], b["low"], b["close"], b["volume"], b["src"]))
 
     def upsert_bars(self, bars):
-        for b in bars:
-            self.upsert_bar(b)
+        """批次寫入（executemany，一次交易），5 萬筆幾秒內完成。"""
+        if not bars:
+            return
+        rows = [(b["ts"], b["open"], b["high"], b["low"], b["close"], b["volume"], b["src"]) for b in bars]
+        if self.kind == "postgres":
+            sql = """INSERT INTO bars (ts,open,high,low,close,volume,src) VALUES (%s,%s,%s,%s,%s,%s,%s)
+                     ON CONFLICT (ts) DO UPDATE SET open=EXCLUDED.open,high=EXCLUDED.high,low=EXCLUDED.low,
+                     close=EXCLUDED.close,volume=EXCLUDED.volume,src=EXCLUDED.src"""
+        else:
+            sql = "INSERT OR REPLACE INTO bars (ts,open,high,low,close,volume,src) VALUES (?,?,?,?,?,?,?)"
+        with self.lock:
+            for attempt in (1, 2):
+                try:
+                    if self.conn is None and not self.connect():
+                        return
+                    if self.kind == "postgres":
+                        with self.conn.transaction():
+                            with self.conn.cursor() as cur:
+                                cur.executemany(sql, rows)
+                    else:
+                        self.conn.execute("BEGIN")
+                        self.conn.executemany(sql, rows)
+                        self.conn.execute("COMMIT")
+                    return
+                except Exception as e:
+                    self.error = repr(e); self.ok = False; self.conn = None
+                    if attempt == 2:
+                        print(f"[DB] upsert_bars failed: {e!r}", flush=True)
 
     def add_signal(self, s):
         self.run("INSERT INTO signals (t,side,price,reason) VALUES (?,?,?,?)",

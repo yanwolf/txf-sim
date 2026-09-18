@@ -169,9 +169,13 @@ class Portfolio:
             pass
 
     def snapshot(self):
-        with self.lock:
+        if not self.lock.acquire(timeout=0.5):
+            return {"ready": False, "net": 0, "strategies": [], "busy": True}
+        try:
             return {"ready": self.ready, "net": self.net(),
                     "strategies": [s.snapshot() for s in self.strategies]}
+        finally:
+            self.lock.release()
 
 
 PORTFOLIO = Portfolio()

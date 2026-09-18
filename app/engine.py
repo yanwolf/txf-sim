@@ -233,9 +233,22 @@ class Engine:
         try:
             end = now().date()
             start = end - timedelta(days=WARMUP_DAYS)
-            k = self.api.kbars(self.contract, start=start.isoformat(), end=end.isoformat())
+            # 分段拉（每段 7 天），避免一次拉太久把整個程式卡住
+            chunks = []
+            cs = start
+            while cs <= end:
+                ce = min(cs + timedelta(days=6), end)
+                k = self.api.kbars(self.contract, start=cs.isoformat(), end=ce.isoformat())
+                chunks.append(k)
+                STATE.log("INFO", f"回補 {cs} ~ {ce}：{len(k.ts)} 根")
+                cs = ce + timedelta(days=1)
+                time.sleep(0.2)
+            ts_all, o_all, h_all, l_all, c_all, v_all = [], [], [], [], [], []
+            for k in chunks:
+                ts_all += list(k.ts); o_all += list(k.Open); h_all += list(k.High)
+                l_all += list(k.Low); c_all += list(k.Close); v_all += list(k.Volume)
             bars = []
-            for ts, o, h, l, c, v in zip(k.ts, k.Open, k.High, k.Low, k.Close, k.Volume):
+            for ts, o, h, l, c, v in zip(ts_all, o_all, h_all, l_all, c_all, v_all):
                 # Shioaji 的 ts 已是台北時間（以 UTC 形式存），且標的是該分鐘的「結束」時間
                 # 轉成跟即時 K 一致的「起始分鐘」標籤
                 dt = _norm_minute(datetime.utcfromtimestamp(ts / 1e9) - timedelta(minutes=1))
