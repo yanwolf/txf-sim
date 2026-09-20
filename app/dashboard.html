@@ -103,6 +103,11 @@
   .savebar .in{max-width:900px;margin:0 auto;display:flex;align-items:center;gap:12px}
   .page-cfg-on .savebar{display:block}
   .saved{color:var(--down)}
+  .btstats{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px;margin:10px 0}
+  .btstats div{background:var(--bg);border-radius:8px;padding:8px}
+  .btstats span{display:block;font-size:11px;color:var(--dim);margin-bottom:2px}
+  .btstats b{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+  input[type=date]{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px 8px;font:inherit}
 </style>
 </head>
 <body>
@@ -110,6 +115,7 @@
   <div class="title">台指期</div>
   <div class="tabs">
     <button class="on" onclick="showPage('main',this)">監控</button>
+    <button onclick="showPage('bt',this)">回測</button>
     <button onclick="showPage('cfg',this)">設定</button>
   </div>
   <span id="lock" class="lock"></span>
@@ -171,6 +177,24 @@
 
     <h2>事件紀錄</h2>
     <div class="log" id="events"></div>
+  </div>
+
+  <div id="page-bt" class="page">
+    <div class="card">
+      <h3>回測條件</h3>
+      <div class="desc">用與即時完全相同的策略邏輯重播歷史 1 分 K，逐筆模擬觸價成交。</div>
+      <div class="row">
+        <label>起 <input type="date" id="bt-start"></label>
+        <label>訖 <input type="date" id="bt-end"></label>
+      </div>
+      <div class="row">
+        <label>商品 <select id="bt-contract"><option value="TMF">微台（10元/點）</option><option value="MXF">小台（50元/點）</option><option value="TXF">大台（200元/點）</option></select></label>
+        <label>單邊成本 <input type="number" id="bt-cost" value="2" step="0.5" style="width:70px"> 點</label>
+      </div>
+      <div class="row" id="bt-picks"></div>
+      <div class="row"><button class="primary" id="bt-run" onclick="runBT()">開始回測</button><span id="bt-msg" style="font-size:13px"></span></div>
+    </div>
+    <div id="bt-out"></div>
   </div>
 
   <div id="page-cfg" class="page">
@@ -289,6 +313,7 @@ function showPage(p,btn){
   document.body.classList.toggle('page-cfg-on',p==='cfg');
   window.scrollTo(0,0);
   if(p==='cfg')loadConfig();
+  if(p==='bt')initBT();
 }
 async function login(){
   const r=await fetch('/api/login',{method:'POST',headers:hdr(),body:JSON.stringify({password:$('pw').value})});
@@ -336,6 +361,99 @@ async function saveConfig(){
   $('save-msg').textContent='已儲存，重播中…';$('save-msg').className='saved';
   setTimeout(()=>{$('save-msg').textContent='';loadConfig();},4000);
 }
+// ============ 回測 ============
+let BTinit=false;
+async function initBT(){
+  if(!BTinit){
+    const d=await fetch('/api/config',{headers:hdr()}).then(r=>r.json());
+    $('bt-picks').innerHTML='<span style="font-size:13px;color:var(--dim)">策略</span>'+d.strategies.map(s=>`<label><input type="checkbox" class="bt-s" value="${s.name}" ${s.enabled?'checked':''}> ${s.name}</label>`).join('');
+    const t=new Date(), p=new Date(Date.now()-90*864e5);
+    $('bt-end').value=t.toISOString().slice(0,10); $('bt-start').value=p.toISOString().slice(0,10);
+    BTinit=true;
+  }
+  pollBT();
+}
+async function runBT(){
+  const names=[...document.querySelectorAll('.bt-s:checked')].map(x=>x.value);
+  if(!names.length){alert('請至少選一支策略');return;}
+  $('bt-run').disabled=true; $('bt-msg').textContent='啟動中…';
+  const body={start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,contract:$('bt-contract').value,strategies:names};
+  const r=await fetch('/api/backtest/run',{method:'POST',headers:hdr(),body:JSON.stringify(body)});
+  if(!r.ok){$('bt-msg').textContent='無法啟動（可能已在執行）';$('bt-run').disabled=false;return;}
+  pollBT();
+}
+async function pollBT(){
+  const st=await fetch('/api/backtest/status',{headers:hdr()}).then(r=>r.json());
+  $('bt-msg').textContent=st.error?('失敗：'+st.error):st.progress||'';
+  $('bt-msg').className=st.error?'st-bad':'';
+  $('bt-run').disabled=st.running;
+  if(st.running){setTimeout(pollBT,1500);return;}
+  if(st.has_result)renderBT();
+}
+const M=(v,n=0)=>v==null?'—':Number(v).toLocaleString('zh-TW',{maximumFractionDigits:n});
+function kv(k,v,c){return `<div><span>${k}</span><b class="${c||''}">${v}</b></div>`;}
+function statBlock(x,bpv){
+  if(!x.trades)return '<div class="empty">此區間沒有交易</div>';
+  return `<div class="btstats">
+    ${kv('淨損益',M(x.net_pts,1)+' 點',cls(x.net_pts))}
+    ${kv('金額',M(x.net_money)+' 元',cls(x.net_money))}
+    ${kv('交易次數',x.trades)}
+    ${kv('勝率',x.win_rate+'%')}
+    ${kv('獲利因子',x.profit_factor,x.profit_factor>=1.5?'up':x.profit_factor<1?'down':'')}
+    ${kv('期望值',M(x.expectancy,1)+' 點',cls(x.expectancy))}
+    ${kv('最大回撤',M(x.max_dd_pts,1)+' 點',x.max_dd_pts?'down':'')}
+    ${kv('回撤金額',M(x.max_dd_money)+' 元',x.max_dd_money?'down':'')}
+    ${kv('賺賠比',x.payoff)}
+    ${kv('平均獲利',M(x.avg_win,1),'up')}
+    ${kv('平均虧損',M(x.avg_loss,1),'down')}
+    ${kv('最大連虧',x.max_consec_loss+' 次')}
+    ${kv('最大單筆獲利',M(x.best,1),'up')}
+    ${kv('最大單筆虧損',M(x.worst,1),'down')}
+    ${kv('平均持倉',M(x.avg_minutes)+' 分')}
+    ${kv('回復因子',x.recovery_factor)}
+    ${kv('多單',x.long_trades+' 筆 '+M(x.long_pts,1),cls(x.long_pts))}
+    ${kv('空單',x.short_trades+' 筆 '+M(x.short_pts,1),cls(x.short_pts))}
+  </div>`;
+}
+function monthlyTable(ms){
+  if(!ms||!ms.length)return '';
+  return `<table style="margin-top:8px"><thead><tr><th>月份</th><th>淨點數</th><th>交易</th><th>勝率</th></tr></thead><tbody>
+    ${ms.map(m=>`<tr class="num"><td>${m.month}</td><td class="${cls(m.pts)}">${M(m.pts,1)}</td><td>${m.trades}</td><td>${m.win_rate}%</td></tr>`).join('')}</tbody></table>`;
+}
+function equitySVG(eq){
+  if(!eq||eq.length<2)return '';
+  const w=680,h=160,vs=eq.map(p=>p.eq),mn=Math.min(0,...vs),mx=Math.max(0,...vs),rg=(mx-mn)||1;
+  const X=i=>i/(eq.length-1)*w, Y=v=>h-(v-mn)/rg*h;
+  const d=eq.map((p,i)=>`${i?'L':'M'}${X(i).toFixed(1)},${Y(p.eq).toFixed(1)}`).join('');
+  const up=vs[vs.length-1]>=0;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:160px;display:block">
+    <line x1="0" y1="${Y(0).toFixed(1)}" x2="${w}" y2="${Y(0).toFixed(1)}" stroke="#2b2f3a"/>
+    <path d="${d}" fill="none" stroke="${up?'#e5484d':'#2fb36b'}" stroke-width="2"/></svg>
+    <div style="display:flex;justify-content:space-between;color:var(--dim);font-size:11px"><span>${eq[0].t}</span><span>累積 ${M(vs[vs.length-1],1)} 點</span><span>${eq[eq.length-1].t}</span></div>`;
+}
+async function renderBT(){
+  const r=await fetch('/api/backtest/result',{headers:hdr()}).then(x=>x.json());
+  if(r.empty){$('bt-out').innerHTML='';return;}
+  const p=r.params, c=r.combined;
+  const names=Object.keys(r.per_strategy);
+  $('bt-out').innerHTML=`
+    <div class="card"><h3>組合績效</h3>
+      <div class="desc">${p.start} ~ ${p.end}　·　${M(p.bars)} 根 1 分 K　·　${p.days} 個交易日　·　${p.contract} 每點 ${p.bpv} 元　·　單邊成本 ${p.cost_pts} 點</div>
+      ${statBlock(c,p.bpv)}
+      ${equitySVG(r.equity)}
+      ${monthlyTable(c.monthly)}
+    </div>
+    ${names.map(n=>{const x=r.per_strategy[n];return `<div class="card"><h3>${n}</h3>
+      <div class="desc">${x.minutes} 分 K · ${x.lots} 口</div>${statBlock(x,p.bpv)}${monthlyTable(x.monthly)}</div>`;}).join('')}
+    ${r.open_positions.length?`<div class="card"><h3>回測結束時仍持倉</h3>${r.open_positions.map(t=>`<div style="font-size:13px">${t.strategy}　${t.side}　${M(t.entry_price)} → ${M(t.exit_price)}　<b class="${cls(t.net_pts)}">${M(t.net_pts,1)} 點</b>（以最後價估算）</div>`).join('')}</div>`:''}
+    <div class="card"><h3>交易明細</h3>
+      <div class="desc">共 ${M(r.trade_count)} 筆${r.trade_count>r.trades.length?`，以下顯示最近 ${r.trades.length} 筆`:''}　·　<a href="/api/backtest/csv" style="color:var(--blue)">下載完整 CSV</a></div>
+      <div class="scroll" style="max-height:420px"><table>
+        <thead><tr><th>策略</th><th>方向</th><th>進場</th><th>價</th><th>出場</th><th>價</th><th>點數</th><th>金額</th><th>原因</th></tr></thead>
+        <tbody>${r.trades.slice().reverse().map(t=>`<tr class="num"><td>${t.strategy}</td><td class="${t.side==='多'?'up':'down'}">${t.side}</td><td>${(t.entry_time||'').slice(5,16)}</td><td>${M(t.entry_price)}</td><td>${(t.exit_time||'').slice(5,16)}</td><td>${M(t.exit_price)}</td><td class="${cls(t.net_pts)}">${M(t.net_pts,1)}</td><td class="${cls(t.money)}">${M(t.money)}</td><td style="text-align:left">${t.exit_label||''}</td></tr>`).join('')}</tbody>
+      </table></div></div>`;
+}
+
 fetch('/api/auth',{headers:hdr()}).then(r=>r.json()).then(setLock);
 tick(); setInterval(tick,3000);
 </script>
