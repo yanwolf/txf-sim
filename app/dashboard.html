@@ -64,7 +64,8 @@
   .scard .ord b{color:var(--ink);font-weight:500}
   .dbgbtn{color:var(--blue);cursor:pointer;user-select:none;padding:4px 0;font-size:12.5px}
   .dbg{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin:8px 0}
-  .dbg div{background:var(--bg);border-radius:6px;padding:6px 8px}
+  .dbg div{background:var(--bg);border-radius:6px;padding:6px 8px;overflow-wrap:anywhere}
+  .dbg div:has(b br){grid-column:1/-1}
   .dbg span{display:block;font-size:10.5px;color:var(--dim)}
   .dbg b{font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--ink)}
   .netline{color:var(--dim);font-size:12.5px;padding:4px 2px}
@@ -298,7 +299,7 @@ async function tick(){
           <div><span>最大浮盈</span>${x.mp?x.maxprofit_pts:'—'}</div>
           <div><span>今日進場</span>${x.entries_today}</div>
         </div>
-        <div class="ord">${Object.keys(x.debug||{}).length?`<div id="dbgb-${x.name}" class="dbgbtn" onclick="toggleDbg('${x.name}')">${DBGOPEN.has(x.name)?'▼':'▶'} 計算過程</div><div class="dbg" id="dbg-${x.name}" style="display:${DBGOPEN.has(x.name)?'grid':'none'}">${Object.entries(x.debug).map(([k,v])=>`<div><span>${k}</span><b class="${v===true?'st-ok':v===false?'st-warn':''}">${typeof v==='boolean'?(v?'成立':'不成立'):Array.isArray(v)?v.map(n=>fmt(n)).join(' / '):(typeof v==='number'?fmt(v):v)}</b></div>`).join('')}</div>`:''}${x.last_bar?'最後 K '+x.last_bar.slice(5)+'　':''}${(x.orders||[]).length?'掛單：'+(x.orders||[]).map(o=>`<b>${A[o.action]} ${K[o.kind]}${o.price?' '+fmt(Math.round(o.price)):''}</b>（${o.label}）`).join('、'):'無掛單'}</div>
+        <div class="ord">${Object.keys(x.debug||{}).length?`<div id="dbgb-${x.name}" class="dbgbtn" onclick="toggleDbg('${x.name}')">${DBGOPEN.has(x.name)?'▼':'▶'} 計算過程</div><div class="dbg" id="dbg-${x.name}" style="display:${DBGOPEN.has(x.name)?'grid':'none'}">${Object.entries(x.debug).map(([k,v])=>`<div><span>${k}</span><b class="${v===true?'st-ok':v===false?'st-warn':''}">${typeof v==='boolean'?(v?'成立':'不成立'):Array.isArray(v)?v.map(n=>typeof n==='number'?fmt(n):n).join(typeof v[0]==='string'?'<br>':' / '):(typeof v==='number'?fmt(v):v)}</b></div>`).join('')}</div>`:''}${x.last_bar?'最後 K '+x.last_bar.slice(5)+'　':''}${(x.orders||[]).length?'掛單：'+(x.orders||[]).map(o=>`<b>${A[o.action]} ${K[o.kind]}${o.price?' '+fmt(Math.round(o.price)):''}</b>（${o.label}）`).join('、'):'無掛單'}</div>
       </div>`).join(''):'<div class="empty">'+(pf.busy||!pf.ready?'重播中…':'尚無策略')+'</div>')
       +`<div class="netline">淨部位 ${pf.net>0?'多 ':pf.net<0?'空 ':''}${Math.abs(pf.net)||0} 口${pf.ready?'':'　·　歷史重播中'}</div>`;
     $('orders-h').textContent=sigMode?'委託與成交（訊號模式不會有）':'委託與成交';

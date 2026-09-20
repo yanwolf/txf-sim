@@ -92,23 +92,24 @@ def build_bars(m1_bars, minutes):
 
 
 def build_sessions(m1_bars):
-    """每個交易時段一筆：high/low/close、交易日、is_day。"""
-    return build_bars(m1_bars, 24 * 60)
+    """每個交易時段一筆。date = 時段結束的曆法日（夜盤→隔天），供 build_days 合成交易日。"""
+    out = build_bars(m1_bars, 24 * 60)
+    for b in out:
+        end = parse_ts(b["ts"])
+        b["date"] = end.date()
+        b["week"] = week_key(b["date"])
+    return out
 
 
 def build_days(session_bars, m1_bars=None):
-    """交易日彙總。calendar 模式用 1 分 K 依「結束時間的曆法日」聚合；其他模式用時段。"""
+    """日線序列（給 CloseD 用）：前一晚夜盤 + 當天日盤合成一根，即期交所的交易日。
+
+    與 MultiCharts 一致：
+      週一日盤自成一根（週日無夜盤）；週二 = 週一夜盤 + 週二日盤；
+      週五夜盤因後面沒有日盤，自成一根並標週六。
+    注意這跟 K 棒本身的日期（曆法日，過 24:00 換天）是兩回事，後者給 D()/EntriesToday 用。
+    """
     out = []
-    if NIGHT_SESSION_DAY == "calendar" and m1_bars is not None:
-        for b in m1_bars:
-            d = (parse_ts(b["ts"]) + timedelta(minutes=1)).date()
-            if out and out[-1]["date"] == d:
-                x = out[-1]
-                x["high"] = max(x["high"], b["high"]); x["low"] = min(x["low"], b["low"]); x["close"] = b["close"]
-            else:
-                out.append({"date": d, "open": b["open"], "high": b["high"], "low": b["low"],
-                            "close": b["close"], "week": week_key(d)})
-        return out
     for s in session_bars:
         if out and out[-1]["date"] == s["date"]:
             d = out[-1]

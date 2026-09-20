@@ -76,7 +76,9 @@ class TMFF(Strategy):
                 "SwingLow": self.swinglow(p["SWing"], 200),
                 "多單條件": self.C() > ma + ar * p["BB"] and self.BS == 1,
                 "空單條件": self.C() < ma - ar * p["SS"] and self.BS == -1,
-                "日收(1~6)": [round(self.closeD(i), 1) for i in range(1, 7)]}
+                "日收(1~6)": [round(self.closeD(i), 1) for i in range(1, 7)],
+                "日線(近5根)": [f"{d['date']} O{d['open']:.0f} H{d['high']:.0f} L{d['low']:.0f} C{d['close']:.0f}"
+                              for d in self.days[-5:]]}
 
 
 class ARCrossover2025(Strategy):
