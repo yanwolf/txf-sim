@@ -51,7 +51,7 @@ class Trade:
                 "minutes": self.bars_held}
 
 
-def _stats(trades, bpv, equity_curve):
+def _stats(trades, bpv, equity_curve, mdd_override=None):
     """從交易清單算績效。equity_curve 為逐筆累積淨點數。"""
     n = len(trades)
     if n == 0:
@@ -78,6 +78,8 @@ def _stats(trades, bpv, equity_curve):
             cl += 1; cw = 0; ml = max(ml, cl)
     longs = [t for t in trades if t.side > 0]
     shorts = [t for t in trades if t.side < 0]
+    if mdd_override is not None:
+        mdd, mdd_range = mdd_override[0], (mdd_override[1], mdd_override[2])
     return {
         "trades": n, "wins": len(wins), "losses": len(losses),
         "win_rate": round(len(wins) / n * 100, 1),
@@ -92,6 +94,7 @@ def _stats(trades, bpv, equity_curve):
         "best": round(max(t.net_pts for t in trades), 1),
         "worst": round(min(t.net_pts for t in trades), 1),
         "max_dd_pts": round(mdd, 1), "max_dd_money": round(mdd * bpv),
+        "dd_basis": "floating" if mdd_override is not None else "closed",
         "max_dd_from": mdd_range[0], "max_dd_to": mdd_range[1],
         "recovery_factor": round(net / mdd, 2) if mdd > 0 else 0,
         "max_consec_win": mw, "max_consec_loss": ml,
@@ -116,6 +119,20 @@ def _monthly(trades):
         o["pts"] = round(o["pts"], 1)
         o["win_rate"] = round(o["wins"] / o["trades"] * 100, 1) if o["trades"] else 0
     return sorted(out.values(), key=lambda x: x["month"])
+
+
+def _sample(curve, n):
+    if not curve:
+        return []
+    if len(curve) <= n:
+        return [{"t": t, "eq": round(v, 1)} for t, v in curve]
+    step = len(curve) / n
+    out = []
+    for i in range(n):
+        t, v = curve[int(i * step)]
+        out.append({"t": t, "eq": round(v, 1)})
+    out.append({"t": curve[-1][0], "eq": round(curve[-1][1], 1)})
+    return out
 
 
 class Backtester:
@@ -200,16 +217,21 @@ class Backtester:
         first_tick = {}
         open_trade = {s.name: None for s in strats}
         trades = []
+        realized = {"v": 0.0}
+        eq_track = {"peak": 0.0, "mdd": 0.0, "from": None, "to": None, "peak_t": None}
+        float_curve = []      # 每 N 根 1 分 K 取樣一次的浮動權益（含未實現）
 
         def on_fill(s, action, price, label, ts):
             ot = open_trade[s.name]
             if action in ("sell", "buytocover"):
                 if ot:
-                    trades.append(ot.close(ts, price, label, cost * 2))
+                    t = ot.close(ts, price, label, cost * 2)
+                    trades.append(t); realized["v"] += t.net_pts
                     open_trade[s.name] = None
             else:
                 if ot:   # 反手：先平再開
-                    trades.append(ot.close(ts, price, "反手", cost * 2))
+                    t = ot.close(ts, price, "反手", cost * 2)
+                    trades.append(t); realized["v"] += t.net_pts
                 open_trade[s.name] = Trade(s.name, 1 if action == "buy" else -1, ts, price, label)
 
         for i, b in enumerate(m1):
@@ -247,6 +269,21 @@ class Backtester:
                     r = s.exit_at_close(b["close"])
                     if r:
                         on_fill(s, r[0], r[1], r[2], ts)
+            # 浮動權益（已實現 + 目前所有未平倉的未實現）→ 真正的組合回撤
+            if i % 5 == 0 or i == len(m1) - 1:
+                unreal = 0.0
+                for ot in open_trade.values():
+                    if ot:
+                        unreal += (b["close"] - ot.entry_price) * ot.side - cost * 2
+                eqv = realized["v"] + unreal
+                float_curve.append((ts, eqv))
+                if eq_track["peak_t"] is None:
+                    eq_track["peak_t"] = ts
+                if eqv > eq_track["peak"]:
+                    eq_track["peak"], eq_track["peak_t"] = eqv, ts
+                dd = eq_track["peak"] - eqv
+                if dd > eq_track["mdd"]:
+                    eq_track["mdd"], eq_track["from"], eq_track["to"] = dd, eq_track["peak_t"], ts
 
         self.progress = "計算績效…"
         # 未平倉的：用最後價格結算，標記為持倉中
@@ -260,7 +297,7 @@ class Backtester:
                 d.close(last_ts, last_price, "持倉中（以最後價估算）", cost * 2)
                 open_list.append(d.as_dict(bpv))
 
-        trades.sort(key=lambda t: t.exit_time or "")
+        trades.sort(key=lambda t: (t.exit_time or "", t.entry_time or ""))
         eq, curve = 0.0, []
         for t in trades:
             eq += t.net_pts
@@ -279,9 +316,11 @@ class Backtester:
             "params": {"start": m1[0]["ts"], "end": m1[-1]["ts"], "cost_pts": cost,
                        "contract": contract, "bpv": bpv, "bars": len(m1),
                        "days": len(trading_days), "strategies": [s.name for s in strats]},
-            "combined": {**_stats(trades, bpv, curve), "monthly": _monthly(trades)},
+            "combined": {**_stats(trades, bpv, curve,
+                                  mdd_override=(eq_track["mdd"], eq_track["from"], eq_track["to"])),
+                         "monthly": _monthly(trades)},
             "per_strategy": per,
-            "equity": [{"t": t, "eq": round(v, 1)} for t, v in curve],
+            "equity": _sample(float_curve, 400),
             "trades": [t.as_dict(bpv) for t in trades],
             "open_positions": open_list,
         }

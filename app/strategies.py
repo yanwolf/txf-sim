@@ -66,6 +66,19 @@ class TMFF(Strategy):
             self.exit_market("週末出場")
 
 
+    def debug(self):
+        p = self.p
+        ma = self.average(self.C, p["N"])
+        ar = self.avgrange(200)
+        return {"收盤": self.C(), f"MA{int(p['N'])}": ma, "AvgRange(200)": ar,
+                "多軌 MA+AR×BB": ma + ar * p["BB"], "空軌 MA−AR×SS": ma - ar * p["SS"],
+                "BS 日線方向": self.BS, "SwingHigh": self.swinghigh(p["SWing"], 200),
+                "SwingLow": self.swinglow(p["SWing"], 200),
+                "多單條件": self.C() > ma + ar * p["BB"] and self.BS == 1,
+                "空單條件": self.C() < ma - ar * p["SS"] and self.BS == -1,
+                "日收(1~6)": [round(self.closeD(i), 1) for i in range(1, 7)]}
+
+
 class ARCrossover2025(Strategy):
     """sb_b21AR_crossover_2025：只做多。H 上穿 MA(H)+AvgRange*ATRX 市價進場。"""
     name = "AR_crossover_2025"
@@ -98,6 +111,14 @@ class ARCrossover2025(Strategy):
             self.sell_market("結算日出場")
         if self.weekend_exit_due(p["TNw"]):
             self.exit_market("週末出場")
+
+
+    def debug(self):
+        p = self.p
+        band = self.average(self.H, p["MAN"]) + self.avgrange(p["ATRN"]) * p["ATRX"]
+        return {"最高價": self.H(), "前一根最高": self.H(1), f"MA(H,{int(p['MAN'])})": self.average(self.H, p["MAN"]),
+                f"AvgRange({int(p['ATRN'])})": self.avgrange(p["ATRN"]), "進場軌 MA+AR×ATRX": band,
+                "今日進場次數": self.entries_today, "結算日": self.checkday}
 
 
 class GuYuan2024(Strategy):
@@ -137,6 +158,18 @@ class GuYuan2024(Strategy):
             self.exit_market("週末出場")
 
 
+    def debug(self):
+        p = self.p
+        mid = (self.highest(self.C, p["N3"]) + self.lowest(self.C, p["N3"])) * 0.5
+        v1 = (self.highW(p["N1"]) + self.closeS(p["N2"]) + mid) / 3
+        v2 = (self.lowW(p["N1"]) + self.closeS(p["N2"]) + mid) / 3
+        return {"最高價": self.H(), "最低價": self.L(), f"週高({int(p['N1'])})": self.highW(p["N1"]),
+                f"週低({int(p['N1'])})": self.lowW(p["N1"]), f"時段收({int(p['N2'])})": self.closeS(p["N2"]),
+                "區間中值": mid, "進場價 value1": v1, "出場價 value2": v2,
+                f"最高({int(p['HH'])}根)": self.highest(self.H, p["HH"]), f"最低({int(p['LL'])}根)": self.lowest(self.L, p["LL"]),
+                "結算日": self.checkday}
+
+
 class GuYuan2025(Strategy):
     """sb_b21GuYuan_2025：只做多。20 分 K，加均線多頭排列與每日進場次數限制。"""
     name = "GuYuan_2025"
@@ -165,6 +198,18 @@ class GuYuan2025(Strategy):
             self.sell_market("結算日出場")
         if self.weekend_exit_due(p["TNw"]):
             self.exit_market("週末出場")
+
+
+    def debug(self):
+        p = self.p
+        mid = (self.highest(self.C, p["N3"]) + self.lowest(self.C, p["N3"])) * 0.5
+        v1 = (self.highW(p["N1"]) + self.closeD(p["N2"]) + mid) / 3
+        return {"最高價": self.H(), f"週高({int(p['N1'])})": self.highW(p["N1"]),
+                f"日收({int(p['N2'])})": self.closeD(p["N2"]), "區間中值": mid, "進場價 value1": v1,
+                f"MA{int(p['MA1'])}": self.average(self.C, p["MA1"]), f"MA{int(p['MA2'])}": self.average(self.C, p["MA2"]),
+                "均線多頭": self.average(self.C, p["MA1"]) > self.average(self.C, p["MA2"]),
+                f"最高({int(p['HN'])}根)": self.highest(self.H, p["HN"]),
+                "今日進場次數": self.entries_today, "結算日": self.checkday}
 
 
 class DemoMA(Strategy):

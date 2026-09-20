@@ -222,6 +222,10 @@ class Strategy:
     def on_bar(self):
         raise NotImplementedError
 
+    def debug(self):
+        """給儀表板比對 MultiCharts 指標用的中間值；子類別可覆寫。"""
+        return {}
+
     def run_bar_close(self, bars, sessions, days, weeks, trading_days):
         """一根 N 分 K 收盤：更新資料、清掉上一根的掛單、跑策略。"""
         self.bars, self.sessions, self.days, self.weeks = bars, sessions, days, weeks
@@ -344,4 +348,13 @@ class Strategy:
                 "exit_on_close": self.exit_on_close, "bars": len(self.bars),
                 "orders": [{"kind": o.kind, "action": o.action, "price": o.price, "label": o.label}
                            for o in self.orders if self._valid(o)],
-                "inputs": self.p, "doc": self.doc, "desc": self.desc}
+                "inputs": self.p, "doc": self.doc, "desc": self.desc,
+                "debug": self._safe_debug()}
+
+    def _safe_debug(self):
+        if not self.bars:
+            return {}
+        try:
+            return {k: (round(v, 1) if isinstance(v, float) else v) for k, v in self.debug().items()}
+        except Exception as e:
+            return {"error": repr(e)}
