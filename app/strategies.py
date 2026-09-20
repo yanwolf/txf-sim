@@ -123,6 +123,51 @@ class ARCrossover2025(Strategy):
                 "今日進場次數": self.entries_today, "結算日": self.checkday}
 
 
+class ARCrossoverShort(Strategy):
+    """AR_crossover 的空方鏡像：L 下穿 MA(L)−AvgRange×ATRX 市價放空。
+
+    與多方版完全對稱：進場條件、停損、停利、移動停利、結算日與週末出場都反向。
+    台股長期偏多，空方鏡像的期望值通常低於多方，建議先用 paper 模式累積樣本再決定。
+    """
+    name = "AR_crossover_short"
+    desc = "只做空。最低價下穿 MA(L)−AvgRange×倍數 市價放空，每日最多 ETD 次（AR_crossover 的鏡像）"
+    minutes = 60
+    inputs = dict(MAN=15, ATRN=35, ATRX=0.1, ETD=2, TN=1245, LOSS=55, WIN=500, Twin=200, Tstop=100, TNw=330)
+    doc = dict(MAN="最低價均線期數", ATRN="AvgRange 期數", ATRX="AvgRange 倍數", ETD="每日最多進場次數",
+               TN="結算日幾點出場（HHMM）", LOSS="停損點數", WIN="停利點數", Twin="啟動移動停利的最大浮盈",
+               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）")
+
+    def _band(self, shift=0):
+        p = self.p
+        ma = self.average(lambda k: self.L(k + shift), p["MAN"])
+        ar = sum(self.H(k + shift) - self.L(k + shift) for k in range(int(p["ATRN"]))) / int(p["ATRN"])
+        return ma - ar * p["ATRX"]
+
+    def on_bar(self):
+        p = self.p
+        crosses_under = self.L(1) >= self._band(1) and self.L() < self._band(0)
+        # IF EntriesToday(D)<ETD and L crosses under MA(L)-AvgRange*ATRX then sellshort next bar market;
+        if self.entries_today < p["ETD"] and crosses_under:
+            self.sellshort_market("L 下穿 MA−AR")
+
+        value90 = self.maxprofit_pts
+        if self.mp < 0:
+            self.buytocover_stop(self.entryprice + TICKSIZE * p["LOSS"], "停損")
+            self.buytocover_limit(self.entryprice - TICKSIZE * p["WIN"], "停利")
+            if value90 >= p["Twin"] * TICKSIZE:
+                self.buytocover_stop(self.entryprice - value90 + p["Tstop"] * TICKSIZE, "移動停利")
+
+        if self.checkday and self.T() == p["TN"]:
+            self.buytocover_market("結算日出場")
+        if self.weekend_exit_due(p["TNw"]):
+            self.exit_market("週末出場")
+
+    def debug(self):
+        p = self.p
+        return {"最低價": self.L(), "前一根最低": self.L(1), f"MA(L,{int(p['MAN'])})": self.average(self.L, p["MAN"]),
+                f"AvgRange({int(p['ATRN'])})": self.avgrange(p["ATRN"]), "進場軌 MA−AR×ATRX": self._band(0),
+                "今日進場次數": self.entries_today, "結算日": self.checkday}
+
 class GuYuan2024(Strategy):
     """sb_b21GuYuan_2024：只做多。週高/時段收/區間中值合成價，N 根最高 stop 進場，N 根最低 stop 出場。"""
     name = "GuYuan_2024"
@@ -235,4 +280,4 @@ class DemoMA(Strategy):
             self.sellshort_market("MA 下穿")
 
 
-REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, GuYuan2024, GuYuan2025, DemoMA)}
+REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, ARCrossoverShort, GuYuan2024, GuYuan2025, DemoMA)}

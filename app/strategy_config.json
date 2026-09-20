@@ -39,6 +39,24 @@
       "TNw": 330
     }
   },
+  "AR_crossover_short": {
+    "enabled": false,
+    "mode": "paper",
+    "minutes": 60,
+    "lots": 1,
+    "inputs": {
+      "MAN": 15,
+      "ATRN": 35,
+      "ATRX": 0.1,
+      "ETD": 2,
+      "TN": 1245,
+      "LOSS": 55,
+      "WIN": 500,
+      "Twin": 200,
+      "Tstop": 100,
+      "TNw": 330
+    }
+  },
   "GuYuan_2024": {
     "enabled": true,
     "mode": "live",
