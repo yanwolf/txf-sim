@@ -174,13 +174,33 @@ class Backtester:
         contract = (params.get("contract") or "TMF").upper()
         bpv = BPV.get(contract, 10)
         names = params.get("strategies") or None          # None = 全部啟用中的
+        warmup_days = int(params.get("warmup_days", 15))  # 暖機交易日：只跑指標不計交易
         overrides = params.get("inputs") or {}            # {策略名: {參數: 值}}
 
-        m1 = DB_.load_bars(400000)
-        if start:
-            m1 = [b for b in m1 if b["ts"] >= start]
+        m1_all = DB_.load_bars(400000)
         if end:
-            m1 = [b for b in m1 if b["ts"] <= end + " 23:59"]
+            m1_all = [b for b in m1_all if b["ts"] <= end + " 23:59"]
+        # 暖機：起始日往前多取 warmup_days 個交易日的資料，只餵指標、不計交易
+        stats_from = None
+        if start and warmup_days > 0:
+            trade_dates = sorted({b["ts"][:10] for b in m1_all})
+            before = [d for d in trade_dates if d < start]
+            warm_start = before[-warmup_days] if len(before) >= warmup_days else (before[0] if before else start)
+            m1 = [b for b in m1_all if b["ts"] >= warm_start]
+            stats_from = start
+            warm_used = len([d for d in before if d >= warm_start])
+        elif start:
+            m1 = [b for b in m1_all if b["ts"] >= start]
+            warm_used = 0
+        else:
+            m1 = m1_all
+            warm_used = 0
+            # 沒指定起始日：用資料最前面 warmup_days 個交易日當暖機
+            if warmup_days > 0:
+                ds = sorted({b["ts"][:10] for b in m1})
+                if len(ds) > warmup_days:
+                    stats_from = ds[warmup_days]
+                    warm_used = warmup_days
         if len(m1) < 100:
             raise ValueError(f"資料不足（{len(m1)} 根 1 分 K），請確認日期區間或等待資料累積")
 
@@ -221,17 +241,22 @@ class Backtester:
         eq_track = {"peak": 0.0, "mdd": 0.0, "from": None, "to": None, "peak_t": None}
         float_curve = []      # 每 N 根 1 分 K 取樣一次的浮動權益（含未實現）
 
+        def counted(ts):
+            return stats_from is None or ts[:10] >= stats_from
+
         def on_fill(s, action, price, label, ts):
             ot = open_trade[s.name]
             if action in ("sell", "buytocover"):
                 if ot:
                     t = ot.close(ts, price, label, cost * 2)
-                    trades.append(t); realized["v"] += t.net_pts
+                    if counted(t.entry_time):
+                        trades.append(t); realized["v"] += t.net_pts
                     open_trade[s.name] = None
             else:
                 if ot:   # 反手：先平再開
                     t = ot.close(ts, price, "反手", cost * 2)
-                    trades.append(t); realized["v"] += t.net_pts
+                    if counted(t.entry_time):
+                        trades.append(t); realized["v"] += t.net_pts
                 open_trade[s.name] = Trade(s.name, 1 if action == "buy" else -1, ts, price, label)
 
         for i, b in enumerate(m1):
@@ -270,10 +295,10 @@ class Backtester:
                     if r:
                         on_fill(s, r[0], r[1], r[2], ts)
             # 浮動權益（已實現 + 目前所有未平倉的未實現）→ 真正的組合回撤
-            if i % 5 == 0 or i == len(m1) - 1:
+            if (i % 5 == 0 or i == len(m1) - 1) and counted(ts):
                 unreal = 0.0
                 for ot in open_trade.values():
-                    if ot:
+                    if ot and counted(ot.entry_time):
                         unreal += (b["close"] - ot.entry_price) * ot.side - cost * 2
                 eqv = realized["v"] + unreal
                 float_curve.append((ts, eqv))
@@ -313,9 +338,12 @@ class Backtester:
                            "inputs": s.p, **_stats(st, bpv, c2), "monthly": _monthly(st)}
 
         return {
-            "params": {"start": m1[0]["ts"], "end": m1[-1]["ts"], "cost_pts": cost,
+            "params": {"start": (stats_from + " 00:00") if stats_from else m1[0]["ts"],
+                       "end": m1[-1]["ts"], "cost_pts": cost,
+                       "warmup_days": warm_used, "warmup_from": m1[0]["ts"][:10],
                        "contract": contract, "bpv": bpv, "bars": len(m1),
-                       "days": len(trading_days), "strategies": [s.name for s in strats]},
+                       "days": len([d for d in trading_days if stats_from is None or d.isoformat() >= stats_from]),
+                       "strategies": [s.name for s in strats]},
             "combined": {**_stats(trades, bpv, curve,
                                   mdd_override=(eq_track["mdd"], eq_track["from"], eq_track["to"])),
                          "monthly": _monthly(trades)},

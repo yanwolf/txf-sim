@@ -188,12 +188,13 @@
   <div id="page-bt" class="page">
     <div class="card">
       <h3>回測條件</h3>
-      <div class="desc">用與即時完全相同的策略邏輯重播歷史 1 分 K，逐筆模擬觸價成交。</div>
+      <div class="desc">用與即時完全相同的策略邏輯重播歷史 1 分 K，逐筆模擬觸價成交。暖機期只餵指標不計交易，避免 AvgRange(200)、MA175 等長週期指標在前期失真而污染統計。</div>
       <div class="row">
         <label>起 <input type="date" id="bt-start"></label>
         <label>訖 <input type="date" id="bt-end"></label>
       </div>
       <div class="row">
+        <label>暖機 <input type="number" id="bt-warm" value="15" min="0" style="width:60px"> 交易日</label>
         <label>商品 <select id="bt-contract"><option value="TMF">微台（10元/點）</option><option value="MXF">小台（50元/點）</option><option value="TXF">大台（200元/點）</option></select></label>
         <label>單邊成本 <input type="number" id="bt-cost" value="2" step="0.5" style="width:70px"> 點</label>
       </div>
@@ -390,7 +391,7 @@ async function runBT(){
   const names=[...document.querySelectorAll('.bt-s:checked')].map(x=>x.value);
   if(!names.length){alert('請至少選一支策略');return;}
   $('bt-run').disabled=true; $('bt-msg').textContent='啟動中…';
-  const body={start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,contract:$('bt-contract').value,strategies:names};
+  const body={start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,contract:$('bt-contract').value,strategies:names,warmup_days:$('bt-warm').value};
   const r=await fetch('/api/backtest/run',{method:'POST',headers:hdr(),body:JSON.stringify(body)});
   if(!r.ok){$('bt-msg').textContent='無法啟動（可能已在執行）';$('bt-run').disabled=false;return;}
   pollBT();
@@ -451,7 +452,7 @@ async function renderBT(){
   const names=Object.keys(r.per_strategy);
   $('bt-out').innerHTML=`
     <div class="card"><h3>組合績效</h3>
-      <div class="desc">${p.start} ~ ${p.end}　·　${M(p.bars)} 根 1 分 K　·　${p.days} 個交易日　·　${p.contract} 每點 ${p.bpv} 元　·　單邊成本 ${p.cost_pts} 點</div>
+      <div class="desc">${p.start} ~ ${p.end}　·　${M(p.bars)} 根 1 分 K　·　${p.days} 個交易日　·　${p.contract} 每點 ${p.bpv} 元　·　單邊成本 ${p.cost_pts} 點${p.warmup_days?`　·　暖機 ${p.warmup_days} 個交易日（自 ${p.warmup_from}，不計交易）`:''}</div>
       ${statBlock(c,p.bpv)}
       ${equitySVG(r.equity)}
       ${monthlyTable(c.monthly)}
