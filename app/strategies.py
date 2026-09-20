@@ -123,13 +123,13 @@ class ARCrossover2025(Strategy):
                 "今日進場次數": self.entries_today, "結算日": self.checkday}
 
 
-class ARCrossoverShort(Strategy):
+class ARCrossunder2025(Strategy):
     """AR_crossover 的空方鏡像：L 下穿 MA(L)−AvgRange×ATRX 市價放空。
 
     與多方版完全對稱：進場條件、停損、停利、移動停利、結算日與週末出場都反向。
     台股長期偏多，空方鏡像的期望值通常低於多方，建議先用 paper 模式累積樣本再決定。
     """
-    name = "AR_crossover_short"
+    name = "AR_crossunder_2025"
     desc = "只做空。最低價下穿 MA(L)−AvgRange×倍數 市價放空，每日最多 ETD 次（AR_crossover 的鏡像）"
     minutes = 60
     inputs = dict(MAN=15, ATRN=35, ATRX=0.1, ETD=2, TN=1245, LOSS=55, WIN=500, Twin=200, Tstop=100, TNw=330)
@@ -280,4 +280,4 @@ class DemoMA(Strategy):
             self.sellshort_market("MA 下穿")
 
 
-REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, ARCrossoverShort, GuYuan2024, GuYuan2025, DemoMA)}
+REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, ARCrossunder2025, GuYuan2024, GuYuan2025, DemoMA)}
