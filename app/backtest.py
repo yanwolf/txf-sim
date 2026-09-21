@@ -263,7 +263,8 @@ class Backtester:
             if i % 20000 == 0:
                 self.progress = f"重播 {i}/{len(m1)}…"
             ts = b["ts"]
-            m1_end = tf.parse_ts(ts) + timedelta(minutes=1)
+            bar_dt = tf.parse_ts(ts)
+            m1_end = bar_dt + timedelta(minutes=1)
             seq = (b["open"], b["high"], b["low"], b["close"]) if b["close"] >= b["open"] \
                 else (b["open"], b["low"], b["high"], b["close"])
             for m, ss in by_tf.items():
@@ -275,7 +276,7 @@ class Backtester:
                         favor = (b["high"] - ot.entry_price) if ot.side > 0 else (ot.entry_price - b["low"])
                         ot.mae = max(ot.mae, adverse); ot.mfe = max(ot.mfe, favor)
                     for px in seq:
-                        r = s.on_tick(px, first_tick.get((m, s.name), False))
+                        r = s.on_tick(px, first_tick.get((m, s.name), False), bar_dt)
                         first_tick[(m, s.name)] = False
                         if r:
                             on_fill(s, r[0], r[1], r[2], ts)

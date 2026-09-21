@@ -254,8 +254,26 @@ class Strategy:
                     self.log("ERROR", f"[{self.name}] on_bar 錯誤：{e!r}")
         self.mp_prev = self.mp
 
-    def on_tick(self, price, is_first_tick_of_bar):
-        """回 (fill_action, fill_price, label) 或 None。市價單在下一根 K 的第一筆 tick 成交。"""
+    def weekend_block(self, now_dt):
+        """週六（曆法日）且時間 >= TNw：該策略不得持倉也不得進場。"""
+        if now_dt is None or "TNw" not in self.p:
+            return False
+        return now_dt.weekday() == 5 and now_dt.hour * 100 + now_dt.minute >= int(self.p["TNw"])
+
+    def on_tick(self, price, is_first_tick_of_bar, now_dt=None):
+        """回 (fill_action, fill_price, label) 或 None。市價單在下一根 K 的第一筆 tick 成交。
+
+        now_dt：該筆 tick 的時間（台北時間，naive 或 aware 皆可）。用於週末不留倉：
+        週六過 TNw 立刻以當下價出場，並擋掉之後所有進場，不必等 K 棒收盤。
+        """
+        if self.weekend_block(now_dt):
+            if self.mp != 0 and not self.filled_this_bar:
+                action = "sell" if self.mp > 0 else "buytocover"
+                self._apply(action, price)
+                self.filled_this_bar = True
+                self.orders = []
+                return (action, price, "週末出場")
+            self.orders = [o for o in self.orders if o.action in ("sell", "buytocover")]
         if self.mp > 0 and self.entryprice is not None:
             self.maxprofit_pts = max(self.maxprofit_pts, price - self.entryprice)
         elif self.mp < 0 and self.entryprice is not None:

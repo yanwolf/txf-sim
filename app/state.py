@@ -168,6 +168,8 @@ def in_session(dt):
     if dt.weekday() >= 5 and not (dt.weekday() == 5 and dt.hour < 5):
         return False
     m = dt.hour * 60 + dt.minute
+    if dt.weekday() == 0 and m < 5 * 60:     # 週一凌晨：週日沒有夜盤
+        return False
     if 8 * 60 + 45 <= m <= 13 * 60 + 45:
         return True
     if m >= 15 * 60 or m < 5 * 60:

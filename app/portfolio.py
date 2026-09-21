@@ -140,11 +140,12 @@ class Portfolio:
             idx = {m: 0 for m in self.by_tf}
             for i, b in enumerate(m1):
                 m1_end = tf.parse_ts(b["ts"]) + timedelta(minutes=1)
+                bar_dt = tf.parse_ts(b["ts"])
                 # 先用這根 1 分 K 觸價（它是「下一根」的一部分）
                 for m, strats in self.by_tf.items():
                     for s in strats:
                         for px in (b["open"], b["high"], b["low"], b["close"]) if b["close"] >= b["open"] else (b["open"], b["low"], b["high"], b["close"]):
-                            r = s.on_tick(px, self.first_tick.get((m, s.name), False))
+                            r = s.on_tick(px, self.first_tick.get((m, s.name), False), bar_dt)
                             self.first_tick[(m, s.name)] = False
                             if r:
                                 break
@@ -218,7 +219,7 @@ class Portfolio:
             for m, strats in self.by_tf.items():
                 for s in strats:
                     key = (m, s.name)
-                    r = s.on_tick(price, self.first_tick.get(key, False))
+                    r = s.on_tick(price, self.first_tick.get(key, False), now())
                     self.first_tick[key] = False
                     if r:
                         self._fill(s, *r)

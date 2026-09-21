@@ -332,6 +332,7 @@ class Engine:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=TZ)
             with STATE.lock:
+                STATE.subscribed = True          # 有 tick 進來就是訂閱中
                 STATE.tick_count += 1
                 STATE.last_tick_at = dt.strftime("%H:%M:%S")
                 STATE.last_tick_ts = time.time()
