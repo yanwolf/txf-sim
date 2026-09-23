@@ -196,12 +196,18 @@ class Engine:
     def _digits(v):
         return "".join(ch for ch in str(v) if ch.isdigit())
 
+    @staticmethod
+    def _is_month_code(c, root):
+        """真正的月份合約代碼：商品 + 月份字母(A–L) + 年份數字，例如 TMFJ6。排除 R1/R2 連續月。"""
+        return (len(c) == len(root) + 2 and c.startswith(root)
+                and c[len(root)] in "ABCDEFGHIJKL" and c[-1].isdigit())
+
     def _months(self, code):
-        """某商品尚未到期的月合約，依到期日排序。"""
+        """某商品尚未到期的月合約，依到期日排序（不含 R1/R2 連續月代碼）。"""
         group = getattr(self.api.Contracts.Futures, code)
         today = self._digits(now().date())
-        cands = [x for x in group if len(x.code) == len(code) + 2 and self._digits(x.delivery_date) >= today]
-        return sorted(cands, key=lambda x: self._digits(x.delivery_date))
+        cands = [x for x in group if self._is_month_code(x.code, code) and self._digits(x.delivery_date) >= today]
+        return sorted(cands, key=lambda x: (self._digits(x.delivery_date), x.code))
 
     def _month_for(self, code, roll_hhmm):
         """結算日當天 roll_hhmm 起改用次月，其餘時間用最近月。回 (合約, 下一個換月時點說明)。"""
@@ -273,7 +279,7 @@ class Engine:
                 digits = lambda v: "".join(ch for ch in str(v) if ch.isdigit())
                 today = digits(now().date())
                 cands = [x for x in group
-                         if len(x.code) == len(CONTRACT_CODE) + 2 and digits(x.delivery_date) >= today]
+                         if self._is_month_code(x.code, CONTRACT_CODE) and digits(x.delivery_date) >= today]
                 c = sorted(cands, key=lambda x: digits(x.delivery_date))[0]
             self.contract = c
             g = lambda k, d=None: getattr(c, k, d)

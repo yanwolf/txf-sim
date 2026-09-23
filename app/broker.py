@@ -228,7 +228,8 @@ class Broker:
                 STATE.log("WARN", f"啟動對帳：內部 {old} → 採用券商實際部位 {net}")
             else:
                 STATE.log("INFO", f"啟動對帳：券商部位 {net}，與內部一致")
-            held_other = {c: q for c, q in by_code.items() if q and c != STATE.order_contract}
+            held_other = {c: q for c, q in by_code.items()
+                          if q and c != STATE.order_contract and c[3:4] in "ABCDEFGHIJKL"}
             if held_other and self.contract_lookup:
                 oc = list(held_other)[0]
                 oldc = self.contract_lookup(oc)
