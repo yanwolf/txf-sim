@@ -88,6 +88,9 @@ class Broker:
         self.contract_lookup = None   # engine 注入：代碼 → 合約物件
         self._roll_target = None
         self._roll_wait_logged = None
+        self._startup_fail = 0
+        self._last_startup_try = 0.0
+        self._recon_fail = 0
         STATE.mode = MODE
 
     # ------------------------------------------------------------ 初始化
@@ -163,40 +166,7 @@ class Broker:
                 api.set_order_callback(self.on_order_event)
         except Exception as e:
             STATE.log("WARN", f"註冊委託回報失敗：{e!r}")
-        # 啟動對帳：券商是唯一真相，開機時一律採用券商部位（不受 RECONCILE_ADOPT 影響）
-        try:
-            positions = self.api.list_positions(self.account)
-            net, rows, avg, by_code = _net_from_positions(positions, STATE.order_contract)
-            STATE.log("INFO", f"啟動對帳：券商原始部位 {rows or '空'}")
-            with STATE.lock:
-                old = STATE.position
-                STATE.position = net
-                STATE.broker_position = net
-                STATE.reconcile_ok = True
-                if net == 0:
-                    STATE.position_price = None
-                elif old != net or STATE.position_price is None:
-                    STATE.position_price = avg or STATE.last_price
-            if old != net:
-                STATE.log("WARN", f"啟動對帳：內部 {old} → 採用券商實際部位 {net}")
-            else:
-                STATE.log("INFO", f"啟動對帳：券商部位 {net}，與內部一致")
-            held_other = {c: q for c, q in by_code.items() if q and c != STATE.order_contract}
-            if held_other and self.contract_lookup:
-                oc = list(held_other)[0]
-                oldc = self.contract_lookup(oc)
-                if oldc is not None:
-                    self._roll_target = self.contract          # 換月的目標（應下的月份）
-                    self.contract = oldc                       # 先指向實際持有的舊月，由 roll_to 接手
-                    with STATE.lock:
-                        STATE.order_contract = oldc.code
-                    STATE.log("WARN", f"啟動對帳：帳戶持有 {oc} {held_other[oc]} 口（非目前下單月份），將執行換月")
-            self.persist()
-            self.ready = True
-        except Exception as e:
-            self.ready = False
-            STATE.log("ERROR", f"啟動對帳失敗，暫不下單：{e!r}")
-            notify(f"⚠️ 啟動對帳失敗，暫不下單：{e!r}")
+        if not self._startup_reconcile():
             return
         STATE.log("INFO", f"下單層就緒：{MODE}（{'模擬' if SIMULATION else '正式'}）模式，合約 {STATE.order_contract}，帳號 {self.account.account_id}")
 
@@ -233,6 +203,55 @@ class Broker:
         else:
             oc = "Cover" if (pos != 0 and abs(target) < abs(pos) and (target == 0 or (target > 0) == (pos > 0))) else "Auto"
             self._place(delta, price, reason, octype=oc)
+
+    def _startup_reconcile(self):
+        """開機對帳：券商是唯一真相，開機時一律採用券商部位（不受 RECONCILE_ADOPT 影響）。
+        失敗回 False，看門狗每分鐘重試；成功前 ready=False，不會送任何單。"""
+        self._last_startup_try = time.time()
+        try:
+            positions = self.api.list_positions(self.account)
+            net, rows, avg, by_code = _net_from_positions(positions, STATE.order_contract)
+            STATE.log("INFO", f"啟動對帳：券商原始部位 {rows or '空'}")
+            with STATE.lock:
+                old = STATE.position
+                STATE.position = net
+                STATE.broker_position = net
+                STATE.reconcile_ok = True
+                if net == 0:
+                    STATE.position_price = None
+                elif old != net or STATE.position_price is None:
+                    STATE.position_price = avg or STATE.last_price
+            if old != net:
+                STATE.log("WARN", f"啟動對帳：內部 {old} → 採用券商實際部位 {net}")
+            else:
+                STATE.log("INFO", f"啟動對帳：券商部位 {net}，與內部一致")
+            held_other = {c: q for c, q in by_code.items() if q and c != STATE.order_contract}
+            if held_other and self.contract_lookup:
+                oc = list(held_other)[0]
+                oldc = self.contract_lookup(oc)
+                if oldc is not None:
+                    self._roll_target = self.contract          # 換月的目標（應下的月份）
+                    self.contract = oldc                       # 先指向實際持有的舊月，由 roll_to 接手
+                    with STATE.lock:
+                        STATE.order_contract = oldc.code
+                    STATE.log("WARN", f"啟動對帳：帳戶持有 {oc} {held_other[oc]} 口（非目前下單月份），將執行換月")
+            self.persist()
+            self.ready = True
+        except Exception as e:
+            self.ready = False
+            self._startup_fail += 1
+            if self._startup_fail == 1:
+                STATE.log("WARN", f"啟動對帳暫時失敗，每分鐘重試，成功前不下單：{e!r}")
+                if in_session(now()):
+                    notify(f"⚠️ 啟動對帳失敗，重試中（成功前不下單）：{e!r}")
+            elif self._startup_fail % 30 == 0:
+                STATE.log("WARN", f"啟動對帳仍失敗（已重試 {self._startup_fail} 次）：{e!r}")
+            return False
+        if self._startup_fail:
+            STATE.log("INFO", f"啟動對帳成功（重試 {self._startup_fail} 次後）")
+            notify("啟動對帳成功，下單層恢復")
+        self._startup_fail = 0
+        return True
 
     def roll_to(self, new_contract):
         """把下單合約換到 new_contract；手上若有舊月部位，先平舊月、成交後開同向同量的新月。"""
@@ -555,8 +574,14 @@ class Broker:
             elif rec and age > ORDER_TIMEOUT:
                 STATE.log("WARN", f"委託 {oid} 逾時 {int(age)} 秒未回報，主動查詢")
                 self._refresh_orders(oid)
-        # 對帳
-        if time.time() - self._last_reconcile > 60:
+        # 開機對帳失敗 → 每分鐘重試
+        if not self.ready and self.account is not None:
+            if time.time() - self._last_startup_try > 60:
+                if self._startup_reconcile():
+                    STATE.log("INFO", f"下單層就緒：{MODE}（{'模擬' if SIMULATION else '正式'}）模式，合約 {STATE.order_contract}")
+            return
+        # 例行對帳：只在盤中（盤後券商查詢服務會回錯誤，且此時不會下單）
+        if time.time() - self._last_reconcile > 60 and in_session(now()) and not STATE.session_note:
             self._last_reconcile = time.time()
             self.reconcile()
 
@@ -651,7 +676,13 @@ class Broker:
                 else:
                     self.adopt_broker()
         except Exception as e:
-            STATE.log("WARN", f"對帳失敗：{e!r}")
+            self._recon_fail += 1
+            if self._recon_fail == 1 or self._recon_fail % 30 == 0:
+                STATE.log("WARN", f"對帳失敗（連續 {self._recon_fail} 次）：{e!r}")
+            return
+        if self._recon_fail:
+            STATE.log("INFO", f"對帳恢復（先前連續失敗 {self._recon_fail} 次）")
+            self._recon_fail = 0
 
     def adopt_broker(self):
         """手動或自動：內部帳改成券商的數字。"""

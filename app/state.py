@@ -12,6 +12,15 @@ def now():
     return datetime.now(TZ)
 
 
+import re as _re
+_ID_RE = _re.compile(r"\b([A-Z])[12](\d{8})\b")    # 台灣身分證字號
+
+
+def mask_ids(text):
+    """把身分證字號遮成 A1******89，避免出現在儀表板或通知裡。"""
+    return _ID_RE.sub(lambda m: m.group(1) + "*" * 7 + m.group(2)[-2:], str(text))
+
+
 class State:
     def __init__(self):
         self.lock = threading.RLock()
@@ -67,7 +76,8 @@ class State:
 
     # ---- 寫入 ----
     def log(self, level, msg):
-        e = {"t": now().strftime("%Y-%m-%d %H:%M:%S"), "level": level, "msg": str(msg)}
+        msg = mask_ids(msg)
+        e = {"t": now().strftime("%Y-%m-%d %H:%M:%S"), "level": level, "msg": msg}
         with self.lock:
             self.events.appendleft(e)
         print(f"[{level}] {msg}", flush=True)

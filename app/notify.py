@@ -28,7 +28,8 @@ def notify(text, key=None, cooldown=0):
         if time.time() - t < cooldown:
             return
         _last_sent[key] = time.time()
-    _q.put(f"{PREFIX} {text}")
+    from .state import mask_ids
+    _q.put(f"{PREFIX} {mask_ids(text)}")
 
 
 def _worker():
