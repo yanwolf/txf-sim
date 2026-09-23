@@ -27,7 +27,13 @@
   DayOfWeek(D)              self.D().weekday()+1 % 7 → 用 self.dayofweek()
 一根 K 內每支策略最多成交一次（MultiCharts 預設，不開 bar magnifier）。
 """
+import os as _os
+from datetime import timedelta as _td
+
 from . import tf
+
+HOLIDAY_FLAT = _os.getenv("HOLIDAY_FLAT", "true").lower() == "true"
+HOLIDAY_FLAT_TIME = int(_os.getenv("HOLIDAY_FLAT_TIME", "1340"))   # 休市前一交易日幾點起出場並停止進場
 
 TICKSIZE = 1.0
 
@@ -255,10 +261,24 @@ class Strategy:
         self.mp_prev = self.mp
 
     def weekend_block(self, now_dt):
-        """週六（曆法日）且時間 >= TNw：該策略不得持倉也不得進場。"""
-        if now_dt is None or "TNw" not in self.p:
+        """不得持倉也不得進場的時段：
+        1. 週六（曆法日）且時間 >= TNw（不留倉過週末）
+        2. HOLIDAY_FLAT：休市日前一交易日 >= HOLIDAY_FLAT_TIME，以及休市日當天（不留倉過連假）
+        """
+        if now_dt is None:
             return False
-        return now_dt.weekday() == 5 and now_dt.hour * 100 + now_dt.minute >= int(self.p["TNw"])
+        hm = now_dt.hour * 100 + now_dt.minute
+        if "TNw" in self.p and now_dt.weekday() == 5 and hm >= int(self.p["TNw"]):
+            return True
+        if HOLIDAY_FLAT:
+            from .state import HOLIDAYS
+            if HOLIDAYS:
+                d = now_dt.date()
+                if d in HOLIDAYS:
+                    return True
+                if (d + _td(days=1)) in HOLIDAYS and hm >= HOLIDAY_FLAT_TIME:
+                    return True
+        return False
 
     def on_tick(self, price, is_first_tick_of_bar, now_dt=None):
         """回 (fill_action, fill_price, label) 或 None。市價單在下一根 K 的第一筆 tick 成交。
@@ -272,7 +292,7 @@ class Strategy:
                 self._apply(action, price)
                 self.filled_this_bar = True
                 self.orders = []
-                return (action, price, "週末出場")
+                return (action, price, "週末/連假出場")
             self.orders = [o for o in self.orders if o.action in ("sell", "buytocover")]
         if self.mp > 0 and self.entryprice is not None:
             self.maxprofit_pts = max(self.maxprofit_pts, price - self.entryprice)

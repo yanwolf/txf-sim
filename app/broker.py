@@ -24,6 +24,9 @@ from .notify import notify
 from .state import STATE, in_session, now
 
 MODE = os.getenv("MODE", "signal").lower()
+SIMULATION = os.getenv("SIMULATION", "true").lower() != "false"
+ENV_TAG = "sim" if SIMULATION else "live"
+KV_KEY = f"broker:{ENV_TAG}"      # 正式與模擬的部位/損益/kill 分開存，切換環境不會互相污染
 LOTS = int(os.getenv("LOTS", "1"))
 MAX_POSITION = int(os.getenv("MAX_POSITION", "4"))
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT_PTS", "300"))   # 每口點數，0 = 關閉
@@ -46,6 +49,23 @@ def _ts():
     return now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _net_from_positions(positions, order_code):
+    """把券商部位加總成淨口數。以商品前綴（例如 TMF）比對，避免月份代碼格式差異導致讀成 0。"""
+    root = (order_code or "")[:3]
+    net, rows, avg = 0, [], None
+    for p in positions or []:
+        pc = str(getattr(p, "code", ""))
+        q = abs(int(getattr(p, "quantity", 0) or 0))
+        d = str(getattr(p, "direction", ""))
+        rows.append(f"{pc} {d} {q}")
+        if not root or not pc.startswith(root):
+            continue
+        net += q if "Buy" in d else -q
+        if getattr(p, "price", None):
+            avg = float(p.price)
+    return net, rows, avg
+
+
 class Broker:
     def __init__(self):
         self.lock = threading.RLock()
@@ -61,12 +81,17 @@ class Broker:
         self._last_reconcile = 0.0
         self._mismatch_streak = 0
         self._deferred = None      # pending 時來的新目標，成交後補送
+        self.ready = False         # 下單層就緒且已完成啟動對帳
+        self._last_fill_ts = 0.0
         STATE.mode = MODE
 
     # ------------------------------------------------------------ 初始化
     def restore(self):
         """從 DB 讀回部位與風控狀態（容器重啟用）。"""
-        kv = DB_.get_kv("broker") or {}
+        kv = DB_.get_kv(KV_KEY)
+        if kv is None and ENV_TAG == "sim":
+            kv = DB_.get_kv("broker")          # 舊版單一 key 只可能是模擬環境的資料
+        kv = kv or {}
         with STATE.lock, self.lock:
             STATE.position = int(kv.get("position", 0))
             STATE.position_price = kv.get("position_price")
@@ -89,11 +114,13 @@ class Broker:
             if o.get("broker_id"):
                 self.orders[o["broker_id"]] = o
         if kv:
-            STATE.log("INFO", f"從 DB 還原：部位 {STATE.position} @ {STATE.position_price}，今日已實現 {STATE.realized_pnl}")
+            STATE.log("INFO", f"從 DB 還原（{ENV_TAG}）：部位 {STATE.position} @ {STATE.position_price}，今日已實現 {STATE.realized_pnl}")
+        else:
+            STATE.log("INFO", f"{ENV_TAG} 環境無既有狀態，從零開始（部位以券商查詢為準）")
 
     def persist(self):
         with STATE.lock, self.lock:
-            DB_.set_kv("broker", {
+            DB_.set_kv(KV_KEY, {
                 "position": STATE.position, "position_price": STATE.position_price,
                 "realized_pnl": STATE.realized_pnl, "virtual_pnl": STATE.virtual_pnl,
                 "kill": STATE.kill, "kill_reason": STATE.kill_reason,
@@ -110,7 +137,9 @@ class Broker:
         with STATE.lock:
             STATE.order_contract = getattr(order_contract, "code", None) if order_contract else None
         if MODE == "signal":
+            self.ready = True
             return
+        self.ready = False
         try:
             self.account = api.futopt_account
         except Exception:
@@ -129,7 +158,32 @@ class Broker:
                 api.set_order_callback(self.on_order_event)
         except Exception as e:
             STATE.log("WARN", f"註冊委託回報失敗：{e!r}")
-        STATE.log("INFO", f"下單層就緒：{MODE} 模式，合約 {STATE.order_contract}，帳號 {self.account.account_id}")
+        # 啟動對帳：券商是唯一真相，開機時一律採用券商部位（不受 RECONCILE_ADOPT 影響）
+        try:
+            positions = self.api.list_positions(self.account)
+            net, rows, avg = _net_from_positions(positions, STATE.order_contract)
+            STATE.log("INFO", f"啟動對帳：券商原始部位 {rows or '空'}")
+            with STATE.lock:
+                old = STATE.position
+                STATE.position = net
+                STATE.broker_position = net
+                STATE.reconcile_ok = True
+                if net == 0:
+                    STATE.position_price = None
+                elif old != net or STATE.position_price is None:
+                    STATE.position_price = avg or STATE.last_price
+            if old != net:
+                STATE.log("WARN", f"啟動對帳：內部 {old} → 採用券商實際部位 {net}")
+            else:
+                STATE.log("INFO", f"啟動對帳：券商部位 {net}，與內部一致")
+            self.persist()
+            self.ready = True
+        except Exception as e:
+            self.ready = False
+            STATE.log("ERROR", f"啟動對帳失敗，暫不下單：{e!r}")
+            notify(f"⚠️ 啟動對帳失敗，暫不下單：{e!r}")
+            return
+        STATE.log("INFO", f"下單層就緒：{MODE}（{'模擬' if SIMULATION else '正式'}）模式，合約 {STATE.order_contract}，帳號 {self.account.account_id}")
 
     # ------------------------------------------------------------ 策略入口
     def set_target(self, sign, price, reason):
@@ -187,8 +241,8 @@ class Broker:
         if not in_session(now()) or STATE.session_note:
             STATE.log("WARN", f"非交易時段或推定休市，不送單（{reason}）")
             return
-        if self.api is None or self.contract is None or self.account is None:
-            self._halt("下單層未就緒")
+        if self.api is None or self.contract is None or self.account is None or not self.ready:
+            STATE.log("WARN", f"下單層尚未就緒，略過（{reason}）；就緒後會自動對齊")
             return
         action = Action.Buy if delta > 0 else Action.Sell
         qty = abs(delta)
@@ -307,6 +361,7 @@ class Broker:
                 elif new_pos == 0:
                     STATE.position_price = None
             STATE.position = new_pos
+        self._last_fill_ts = time.time()
         fill = {"t": _ts(), "order_id": oid, "code": code, "action": action, "price": price, "qty": qty}
         DB_.add_fill(fill)
         if rec is not None:
@@ -491,17 +546,7 @@ class Broker:
     def reconcile(self, manual=False):
         try:
             positions = self.api.list_positions(self.account)
-            code = STATE.order_contract or ""
-            net = 0
-            rows = []
-            for p in positions:
-                pc = str(getattr(p, "code", ""))
-                q = int(getattr(p, "quantity", 0) or 0)
-                d = str(getattr(p, "direction", ""))
-                rows.append(f"{pc} {d} {q}")
-                if pc != code:
-                    continue
-                net += abs(q) if "Buy" in d else -abs(q)
+            net, rows, _ = _net_from_positions(positions, STATE.order_contract)
             with STATE.lock:
                 mine = STATE.position
                 STATE.broker_position = net
@@ -536,7 +581,10 @@ class Broker:
                 STATE.log("WARN", f"券商原始部位回傳：{rows or '空'}")
                 notify(f"⚠️ 部位不一致 {self._mismatch_streak} 分鐘：內部 {mine} / 券商 {net}", key="reconcile", cooldown=600)
             if RECONCILE_ADOPT and self._mismatch_streak >= 3:
-                self.adopt_broker()
+                if time.time() - self._last_fill_ts < 300:
+                    STATE.log("WARN", "5 分鐘內剛有成交，券商查詢可能延遲，暫不自動採用券商部位")
+                else:
+                    self.adopt_broker()
         except Exception as e:
             STATE.log("WARN", f"對帳失敗：{e!r}")
 

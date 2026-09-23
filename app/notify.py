@@ -8,7 +8,8 @@ import urllib.request
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-PREFIX = os.getenv("TELEGRAM_PREFIX", "[txf-sim]")
+_SIM = os.getenv("SIMULATION", "true").lower() != "false"
+PREFIX = os.getenv("TELEGRAM_PREFIX", "[模擬]" if _SIM else "[🟡正式]")
 
 _q = queue.Queue()
 _last_sent = {}

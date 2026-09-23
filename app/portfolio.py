@@ -204,7 +204,7 @@ class Portfolio:
         if not self.ready:
             return
         with self.lock:
-            if self.align_pending:
+            if self.align_pending and BROKER.ready:
                 self.align_pending = False
                 self._send_net(price, "啟動對齊")
             else:
@@ -214,7 +214,7 @@ class Portfolio:
                     self._last_sync = _t.time()
                     with STATE.lock:
                         pos, kill, halted, pending = STATE.position, STATE.kill, STATE.strategy_halted, STATE.pending_order
-                    if not kill and not halted and not pending and pos != self.net():
+                    if BROKER.ready and not kill and not halted and not pending and pos != self.net():
                         self._send_net(price, "部位對齊")
             for m, strats in self.by_tf.items():
                 for s in strats:

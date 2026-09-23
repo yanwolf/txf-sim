@@ -162,9 +162,9 @@ class Engine:
         if self.contract is None:
             return
         self._warmup()
+        BROKER.attach(self.api, self._order_contract(), self._legacy)   # 先就緒、先對帳，再收行情
         self._subscribe()
         self._refresh_usage()
-        BROKER.attach(self.api, self._order_contract(), self._legacy)
         notify("已登入並訂閱行情" + ("，重連" if STATE.login_count > 1 else ""), key="login", cooldown=60)
 
     def _activate_ca(self):
