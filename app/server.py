@@ -1,6 +1,7 @@
 """stdlib HTTP 伺服器：儀表板 + JSON API。"""
 import hmac
 import json
+import time
 import os
 import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,7 +13,8 @@ from .state import STATE
 
 HTML = (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
 PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
-TOKENS = set()
+SESSION_MIN = int(os.getenv("DASHBOARD_SESSION_MIN", "30"))   # 登入幾分鐘後自動變回唯讀
+TOKENS = {}                     # token -> 到期時間（epoch 秒）
 _TOKENS_LOADED = False
 
 
@@ -22,8 +24,9 @@ def _load_tokens():
         return
     try:
         from .db import DB_
-        saved = DB_.get_kv("dashboard_tokens") or []
-        TOKENS.update(saved[-20:])
+        saved = DB_.get_kv("dashboard_tokens")
+        if isinstance(saved, dict):                  # 舊版存的是 list，直接捨棄（需重新登入一次）
+            TOKENS.update({k: float(v) for k, v in saved.items()})
         _TOKENS_LOADED = True
     except Exception:
         pass
@@ -32,16 +35,29 @@ def _load_tokens():
 def _save_tokens():
     try:
         from .db import DB_
-        DB_.set_kv("dashboard_tokens", list(TOKENS)[-20:])
+        now_ = time.time()
+        live = {k: v for k, v in TOKENS.items() if v > now_}
+        TOKENS.clear(); TOKENS.update(live)
+        DB_.set_kv("dashboard_tokens", live)
     except Exception:
         pass
+
+
+def _token_left(handler):
+    """回傳這個請求的登入剩餘秒數；未登入或過期回 0。"""
+    _load_tokens()
+    t = handler.headers.get("X-Token", "")
+    exp = TOKENS.get(t, 0)
+    left = exp - time.time()
+    if exp and left <= 0:
+        TOKENS.pop(t, None); _save_tokens()
+    return max(0, left)
 
 
 def _authed(handler):
     if not PASSWORD:
         return True
-    _load_tokens()
-    return handler.headers.get("X-Token", "") in TOKENS
+    return _token_left(handler) > 0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -117,7 +133,8 @@ class Handler(BaseHTTPRequestHandler):
             f = lambda xs: sorted(x.isoformat() for x in xs)
             self._send(200, {"env": f(ENV_HOLIDAYS), "saved": f(SAVED_HOLIDAYS), "effective": f(HOLIDAYS)})
         elif u.path == "/api/auth":
-            self._send(200, {"protected": bool(PASSWORD), "authed": _authed(self)})
+            left = _token_left(self) if PASSWORD else 0
+            self._send(200, {"protected": bool(PASSWORD), "authed": _authed(self), "left_sec": int(left)})
         else:
             self._send(404, {"error": "not found"})
 
@@ -133,11 +150,16 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/login":
             body = self._body()
             if PASSWORD and hmac.compare_digest(str(body.get("password", "")), PASSWORD):
-                t = secrets.token_hex(16); TOKENS.add(t); _save_tokens()
-                self._send(200, {"ok": True, "token": t}); return
+                _load_tokens()
+                t = secrets.token_hex(16); TOKENS[t] = time.time() + SESSION_MIN * 60; _save_tokens()
+                self._send(200, {"ok": True, "token": t, "left_sec": SESSION_MIN * 60}); return
             if not PASSWORD:
                 self._send(200, {"ok": True, "token": ""}); return
             self._send(401, {"ok": False, "error": "密碼錯誤"}); return
+        if u.path == "/api/logout":
+            _load_tokens()
+            TOKENS.pop(self.headers.get("X-Token", ""), None); _save_tokens()
+            self._send(200, {"ok": True}); return
         if not _authed(self):
             self._send(401, {"ok": False, "error": "需要密碼"}); return
         if u.path == "/api/config":

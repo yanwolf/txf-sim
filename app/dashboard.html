@@ -23,6 +23,7 @@
   .tabs button{padding:6px 14px;border-radius:999px}
   .tabs button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
   .lock{font-size:12px;color:var(--dim);white-space:nowrap}
+  .lockbtn{padding:4px 10px;font-size:12px;border-radius:999px}
 
   .wrap{max-width:900px;margin:0 auto;padding:14px 16px 90px}
   .page{display:none} .page.on{display:block}
@@ -128,6 +129,7 @@
     <button onclick="showPage('cfg',this)">設定</button>
   </div>
   <span id="lock" class="lock"></span>
+  <button id="btn-logout" class="lockbtn" onclick="logout()" style="display:none">登出</button>
 </div></div>
 
 <div class="wrap">
@@ -350,11 +352,29 @@ function showPage(p,btn){
 async function login(){
   const r=await fetch('/api/login',{method:'POST',headers:hdr(),body:JSON.stringify({password:$('pw').value})});
   const d=await r.json();
-  if(d.ok){TOKEN=d.token||'';localStorage.setItem('txf_token',TOKEN);$('auth-msg').textContent='已登入';$('auth-msg').className='saved';$('pw').value='';loadConfig();}
+  if(d.ok){TOKEN=d.token||'';localStorage.setItem('txf_token',TOKEN);$('auth-msg').textContent='已登入';$('auth-msg').className='saved';$('pw').value='';refreshAuth();loadConfig();}
   else{$('auth-msg').textContent=d.error||'失敗';$('auth-msg').className='st-bad';}
 }
-function setLock(d){ AUTH=d; document.body.classList.toggle('readonly',!!(d.protected&&!d.authed));
-  $('lock').textContent=d.protected?(d.authed?'已解鎖':'唯讀'):'未設密碼'; $('lock').className='lock '+(d.protected?(d.authed?'st-gold':''):'st-warn'); }
+function setLock(d){
+  AUTH=d; const ro=!!(d.protected&&!d.authed);
+  document.body.classList.toggle('readonly',ro);
+  const mins=d.left_sec?Math.ceil(d.left_sec/60):0;
+  $('lock').textContent=d.protected?(d.authed?`已解鎖 · ${mins} 分`:'唯讀'):'未設密碼';
+  $('lock').className='lock '+(d.protected?(d.authed?'st-gold':''):'st-warn');
+  $('btn-logout').style.display=d.protected&&d.authed?'inline-block':'none';
+}
+async function refreshAuth(){
+  const d=await fetch('/api/auth',{headers:hdr()}).then(r=>r.json()).catch(()=>null);
+  if(!d)return;
+  const was=AUTH.authed; setLock(d);
+  if(was&&!d.authed&&document.getElementById('page-cfg').classList.contains('on')) loadConfig();
+}
+async function logout(){
+  await fetch('/api/logout',{method:'POST',headers:hdr()}).catch(()=>{});
+  TOKEN=''; localStorage.removeItem('txf_token');
+  await refreshAuth();
+  if(document.getElementById('page-cfg').classList.contains('on')) loadConfig();
+}
 async function loadConfig(){
   const d=await fetch('/api/config',{headers:hdr()}).then(r=>r.json());
   setLock(d);
@@ -506,7 +526,7 @@ async function renderBT(){
       </table></div></div>`;
 }
 
-fetch('/api/auth',{headers:hdr()}).then(r=>r.json()).then(setLock);
+refreshAuth(); setInterval(refreshAuth,30000);
 tick(); setInterval(tick,3000);
 </script>
 </body>

@@ -137,7 +137,7 @@ class State:
                 "now": now().isoformat(timespec="seconds"),
                 "in_session": in_session(now()),
                 "holiday": is_holiday(now().date()),
-                "holidays": sorted(x.isoformat() for x in HOLIDAYS if x >= now().date())[:5],
+                "holidays": sorted(x.isoformat() for x in HOLIDAYS if x >= now().date() and x.weekday() < 5)[:3],
                 "session_note": self.session_note,
             }
 
