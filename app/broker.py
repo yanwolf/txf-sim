@@ -34,6 +34,7 @@ ORDER_TIMEOUT = int(os.getenv("ORDER_TIMEOUT", "15"))
 MAX_ORDER_FAILURES = int(os.getenv("MAX_ORDER_FAILURES", "2"))
 FLAT_AT_DAY_CLOSE = os.getenv("FLAT_AT_DAY_CLOSE", "false").lower() == "true"
 RECONCILE_ADOPT = os.getenv("RECONCILE_ADOPT", "false").lower() == "true"
+MARGIN_ALERT_AVAILABLE = float(os.getenv("MARGIN_ALERT_AVAILABLE", "0"))   # 可用保證金低於此金額（元）就通知；0 = 不檢查
 SPLIT_FLIP = os.getenv("SPLIT_FLIP", "true").lower() == "true"   # 反手拆成「平倉」+「新倉」兩張單
 
 # 新舊版 shioaji 常數相容
@@ -91,6 +92,8 @@ class Broker:
         self._startup_fail = 0
         self._last_startup_try = 0.0
         self._recon_fail = 0
+        self.margin = None              # 最近一次保證金查詢結果（dict）
+        self._last_margin = 0.0
         STATE.mode = MODE
 
     # ------------------------------------------------------------ 初始化
@@ -251,7 +254,36 @@ class Broker:
             STATE.log("INFO", f"啟動對帳成功（重試 {self._startup_fail} 次後）")
             notify("啟動對帳成功，下單層恢復")
         self._startup_fail = 0
+        self.refresh_margin()
         return True
+
+    def refresh_margin(self):
+        """查詢期貨帳戶保證金。盤後券商查詢服務可能停擺，失敗就保留上一次的結果。"""
+        if self.api is None or self.account is None:
+            return
+        self._last_margin = time.time()
+        try:
+            m = self.api.margin(self.account)
+            g = lambda k: float(getattr(m, k, 0) or 0)
+            self.margin = {
+                "equity": g("equity"), "equity_amount": g("equity_amount"),
+                "available_margin": g("available_margin"),
+                "initial_margin": g("initial_margin"), "maintenance_margin": g("maintenance_margin"),
+                "margin_call": g("margin_call"), "risk_indicator": g("risk_indicator"),
+                "today_balance": g("today_balance"), "future_open_position": g("future_open_position"),
+                "future_settle_profitloss": g("future_settle_profitloss"),
+                "t": now().strftime("%m-%d %H:%M"),
+            }
+            if self.margin["margin_call"] > 0:
+                STATE.log("ERROR", f"保證金追繳：{self.margin['margin_call']:,.0f} 元")
+                notify(f"🛑 保證金追繳 {self.margin['margin_call']:,.0f} 元，請盡快處理", key="margin_call", cooldown=1800)
+            if MARGIN_ALERT_AVAILABLE > 0 and self.margin["available_margin"] < MARGIN_ALERT_AVAILABLE:
+                STATE.log("WARN", f"可用保證金 {self.margin['available_margin']:,.0f} 元，低於警示 {MARGIN_ALERT_AVAILABLE:,.0f}")
+                notify(f"⚠️ 可用保證金 {self.margin['available_margin']:,.0f} 元，低於警示門檻 {MARGIN_ALERT_AVAILABLE:,.0f}",
+                       key="margin_low", cooldown=3600)
+        except Exception as e:
+            if self.margin is None or in_session(now()):
+                STATE.log("WARN", f"保證金查詢失敗：{e!r}")
 
     def roll_to(self, new_contract):
         """把下單合約換到 new_contract；手上若有舊月部位，先平舊月、成交後開同向同量的新月。"""
@@ -580,6 +612,9 @@ class Broker:
                 if self._startup_reconcile():
                     STATE.log("INFO", f"下單層就緒：{MODE}（{'模擬' if SIMULATION else '正式'}）模式，合約 {STATE.order_contract}")
             return
+        # 保證金：盤中每 5 分鐘
+        if time.time() - self._last_margin > 300 and in_session(now()) and not STATE.session_note:
+            self.refresh_margin()
         # 例行對帳：只在盤中（盤後券商查詢服務會回錯誤，且此時不會下單）
         if time.time() - self._last_reconcile > 60 and in_session(now()) and not STATE.session_note:
             self._last_reconcile = time.time()
@@ -683,6 +718,8 @@ class Broker:
         if self._recon_fail:
             STATE.log("INFO", f"對帳恢復（先前連續失敗 {self._recon_fail} 次）")
             self._recon_fail = 0
+        self.margin = None              # 最近一次保證金查詢結果（dict）
+        self._last_margin = 0.0
 
     def adopt_broker(self):
         """手動或自動：內部帳改成券商的數字。"""

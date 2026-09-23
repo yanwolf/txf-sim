@@ -64,6 +64,8 @@
   .scard .stats span{display:block;color:var(--dim);font-size:10.5px}
   .scard .ord{margin-top:8px;font-size:12px;color:var(--dim);line-height:1.5}
   .scard .ord b{color:var(--ink);font-weight:500}
+  .mg{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:13px}
+  .mg span{display:block;font-size:10.5px;color:var(--dim);font-weight:400}
   .dbgbtn{color:var(--blue);cursor:pointer;user-select:none;padding:4px 0;font-size:12.5px}
   .dbg{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin:8px 0}
   .dbg div{background:var(--bg);border-radius:6px;padding:6px 8px;overflow-wrap:anywhere}
@@ -150,6 +152,7 @@
       <div class="cell"><span class="k" id="pos-label">部位</span><div class="v num" id="pos">—</div></div>
       <div class="cell"><span class="k">今日損益（已實現 + 未實現）</span><div class="v num" id="pnl">—</div></div>
       <div class="cell"><span class="k">券商部位 / 對帳</span><div class="v num" id="bpos">—</div></div>
+      <div class="cell" style="grid-column:1/-1"><span class="k">保證金</span><div class="v num" id="margin">—</div></div>
       <div class="cell"><span class="k">下單合約</span><div class="v" id="ocode">—</div></div>
       <div class="cell"><span class="k">模式</span><div class="v" id="mode">—</div></div>
       <div class="cell"><span class="k">K 線（暖機）</span><div class="v num" id="bars">—</div></div>
@@ -278,6 +281,7 @@ async function tick(){
     $('pos').innerHTML=`<span class="${cls(s.position)}">${posTxt}</span>${s.position_price?' @ '+fmt(Math.round(s.position_price)):''}`;
     const pnlR=sigMode?s.virtual_pnl:s.realized_pnl, pnlU=sigMode?0:s.unrealized_pnl;
     $('pnl').innerHTML=`<span class="${cls(pnlR)}">${sgn(pnlR)}</span> + <span class="${cls(pnlU)}">${sgn(pnlU)}</span>`;
+    loadMargin(false);
     $('bpos').innerHTML=sigMode?'—':(s.broker_position==null?'尚未對帳':`${s.broker_position} <span class="${s.reconcile_ok?'st-ok':(s.mismatch_min>=3?'st-bad':'st-warn')}">${s.reconcile_ok?'一致':(s.mismatch_min>=3?'不一致 '+s.mismatch_min+' 分':'不一致（觀察中）')}</span>`);
     $('ocode').innerHTML=(s.order_contract||'—')+(s.next_roll?`<br><span style="font-weight:400;font-size:12px;color:var(--dim)">${s.next_roll.at.slice(5)} 換 ${s.next_roll.to}</span>`:'');
     $('mode').innerHTML=({signal:'訊號模式（不下單）',sim:'模擬下單',live:'<span class="st-gold">正式下單</span>'})[s.mode]||s.mode;
@@ -328,6 +332,25 @@ async function tick(){
   }catch(e){ $('sym').textContent='無法連到伺服器'; }
 }
 
+let MARGIN_T=0;
+async function loadMargin(force){
+  if(!force&&Date.now()-MARGIN_T<30000)return;
+  MARGIN_T=Date.now();
+  const d=await fetch('/api/margin'+(force?'?refresh=1':''),{headers:hdr()}).then(r=>r.json()).catch(()=>null);
+  if(!d)return;
+  if(d.locked){$('margin').innerHTML='<span style="font-weight:400;color:var(--dim)">登入後顯示</span>';return;}
+  const m=d.margin;
+  if(!m){$('margin').innerHTML='<span style="font-weight:400;color:var(--dim)">尚未查詢（盤中每 5 分鐘更新）</span>';return;}
+  const f=v=>Math.round(v).toLocaleString('zh-TW');
+  const warn=m.margin_call>0;
+  $('margin').innerHTML=`<div class="mg">
+    <div><span>權益數</span>${f(m.equity)}</div>
+    <div><span>可用保證金</span><b class="${warn?'st-bad':''}">${f(m.available_margin)}</b></div>
+    <div><span>原始 / 維持</span>${f(m.initial_margin)} / ${f(m.maintenance_margin)}</div>
+    <div><span>風險指標</span>${m.risk_indicator?m.risk_indicator.toFixed(0)+'%':'—'}</div>
+    ${warn?`<div style="grid-column:1/-1" class="st-bad">追繳 ${f(m.margin_call)} 元</div>`:''}
+  </div><div style="font-weight:400;font-size:11px;color:var(--dim);margin-top:4px">${m.t} 更新 · <a href="#" onclick="loadMargin(true);return false" style="color:var(--blue)">立即更新</a></div>`;
+}
 async function post(path,confirmMsg,body){
   if(AUTH.protected&&!AUTH.authed){
     alert('目前是唯讀狀態，操作前請先到「設定」分頁輸入密碼登入。');
@@ -372,6 +395,7 @@ async function refreshAuth(){
   const d=await fetch('/api/auth',{headers:hdr()}).then(r=>r.json()).catch(()=>null);
   if(!d)return;
   const was=AUTH.authed; setLock(d);
+  if(was!==d.authed){MARGIN_T=0;loadMargin(false);}
   if(was&&!d.authed&&document.getElementById('page-cfg').classList.contains('on')) loadConfig();
 }
 async function logout(){

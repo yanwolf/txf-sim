@@ -128,6 +128,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+        elif u.path == "/api/margin":
+            if not _authed(self):
+                self._send(200, {"locked": True}); return
+            from .broker import BROKER
+            if q.get("refresh", ["0"])[0] == "1":
+                BROKER.refresh_margin()
+            self._send(200, {"locked": False, "margin": BROKER.margin}); return
         elif u.path == "/api/holidays":
             from .state import ENV_HOLIDAYS, SAVED_HOLIDAYS, HOLIDAYS
             f = lambda xs: sorted(x.isoformat() for x in xs)
