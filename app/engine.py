@@ -76,6 +76,15 @@ class Engine:
                 STATE.log("INFO", f"從 DB 還原 K 線 {len(saved)} 根")
         else:
             STATE.log("WARN", f"DB 無法使用：{DB_.error}（狀態只存記憶體）")
+        try:
+            from .state import set_saved_holidays, HOLIDAYS
+            from datetime import date as _d
+            saved = DB_.get_kv("market_holidays") or []
+            set_saved_holidays({_d.fromisoformat(x) for x in saved})
+            if HOLIDAYS:
+                STATE.log("INFO", f"休市日 {len(HOLIDAYS)} 天（最近：{', '.join(sorted(x.isoformat() for x in HOLIDAYS if x >= now().date())[:3]) or '無'}）")
+        except Exception as e:
+            STATE.log("WARN", f"載入休市日失敗：{e!r}")
         BROKER.restore()
         threading.Thread(target=self._run, daemon=True, name="engine").start()
 

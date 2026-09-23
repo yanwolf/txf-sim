@@ -184,7 +184,31 @@ def _parse_holidays():
     return out
 
 
-HOLIDAYS = _parse_holidays()
+ENV_HOLIDAYS = _parse_holidays()          # 來自 Zeabur 變數 MARKET_HOLIDAYS
+SAVED_HOLIDAYS = set()                    # 來自儀表板設定（存 DB）
+HOLIDAYS = set(ENV_HOLIDAYS)              # 生效中 = 兩者聯集；原地更新，勿重新指派
+
+
+def parse_date_list(text):
+    """接受換行、逗號、空白、頓號分隔；YYYY-MM-DD 或 YYYY/MM/DD。回 (日期集合, 無法解析的字串清單)。"""
+    import re
+    ok, bad = set(), []
+    for tok in re.split(r"[\s,，、;；]+", str(text or "")):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            ok.add(_date.fromisoformat(tok.replace("/", "-")))
+        except ValueError:
+            bad.append(tok)
+    return ok, bad
+
+
+def set_saved_holidays(dates):
+    SAVED_HOLIDAYS.clear()
+    SAVED_HOLIDAYS.update(dates)
+    HOLIDAYS.clear()
+    HOLIDAYS.update(ENV_HOLIDAYS | SAVED_HOLIDAYS)
 
 
 def is_holiday(d):

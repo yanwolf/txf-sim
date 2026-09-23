@@ -112,6 +112,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+        elif u.path == "/api/holidays":
+            from .state import ENV_HOLIDAYS, SAVED_HOLIDAYS, HOLIDAYS
+            f = lambda xs: sorted(x.isoformat() for x in xs)
+            self._send(200, {"env": f(ENV_HOLIDAYS), "saved": f(SAVED_HOLIDAYS), "effective": f(HOLIDAYS)})
         elif u.path == "/api/auth":
             self._send(200, {"protected": bool(PASSWORD), "authed": _authed(self)})
         else:
@@ -141,6 +145,16 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
             PORTFOLIO.apply_config(body.get("strategies", {}))
             self._send(200, {"ok": True}); return
+        if u.path == "/api/holidays":
+            from .state import parse_date_list, set_saved_holidays, HOLIDAYS, STATE
+            from .db import DB_
+            dates, bad = parse_date_list(self._body().get("text", ""))
+            if bad:
+                self._send(400, {"ok": False, "error": "無法解析：" + "、".join(bad[:5])}); return
+            set_saved_holidays(dates)
+            DB_.set_kv("market_holidays", sorted(x.isoformat() for x in dates))
+            STATE.log("INFO", f"休市日已更新（儀表板）：共 {len(HOLIDAYS)} 天")
+            self._send(200, {"ok": True, "effective": sorted(x.isoformat() for x in HOLIDAYS)}); return
         if u.path == "/api/backtest/run":
             from .backtest import BACKTEST
             from .portfolio import PORTFOLIO

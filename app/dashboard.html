@@ -100,6 +100,7 @@
   input[type=number],input[type=password],select{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px 8px;font:inherit;width:96px}
   input[type=password]{width:170px}
   input[type=checkbox]{width:18px;height:18px}
+  textarea{width:100%;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px;font:inherit;font-variant-numeric:tabular-nums;resize:vertical}
   .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
   .pgrid div{background:var(--bg);border-radius:8px;padding:8px}
   .pgrid b{display:block;font-size:12.5px;font-weight:600}
@@ -211,6 +212,13 @@
       <h3>操作權限</h3>
       <div class="desc">輸入密碼後才能儲存設定與使用 Kill / 平倉 / 恢復 / 以券商為準。</div>
       <div class="row"><input type="password" id="pw" placeholder="密碼" onkeydown="if(event.key==='Enter')login()"><button class="primary" onclick="login()">登入</button><span id="auth-msg"></span></div>
+    </div>
+    <div class="card" id="hol-card">
+      <h3>休市日</h3>
+      <div class="desc">一行一個或用逗號分隔，格式 2026-10-09。休市前一交易日 13:40 起出場並停止進場，休市當天不送單、不因沒行情而重連。儲存立即生效，不需重啟。</div>
+      <textarea id="hol-text" rows="5" placeholder="2026-09-25&#10;2026-09-28&#10;2026-10-09"></textarea>
+      <div id="hol-env" class="desc" style="margin-top:6px"></div>
+      <div class="row"><button class="primary" onclick="saveHolidays()">儲存休市日</button><span id="hol-msg" style="font-size:13px"></span></div>
     </div>
     <div class="chips" id="chips"></div>
     <div id="cfg-list"></div>
@@ -336,7 +344,7 @@ function showPage(p,btn){
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b===btn));
   document.body.classList.toggle('page-cfg-on',p==='cfg');
   window.scrollTo(0,0);
-  if(p==='cfg')loadConfig();
+  if(p==='cfg'){loadConfig();loadHolidays();}
   if(p==='bt')initBT();
 }
 async function login(){
@@ -371,6 +379,25 @@ async function loadConfig(){
         <div class="pgrid">${Object.keys(s.inputs).map(k=>`<div><b>${k}</b><span>${(s.doc||{})[k]||''}</span><input type="number" step="any" class="c-in" data-k="${k}" value="${s.inputs[k]}" title="預設 ${s.defaults[k]}"></div>`).join('')}</div>
       </div>
     </div>`).join('');
+}
+async function loadHolidays(){
+  const h=await fetch('/api/holidays',{headers:hdr()}).then(r=>r.json());
+  const today=new Date().toISOString().slice(0,10);
+  // DB 還沒存過時，先帶入 Zeabur 變數的日期，存一次就搬進儀表板
+  const src=h.saved.length?h.saved:h.env;
+  if(document.activeElement!==$('hol-text')) $('hol-text').value=src.join('\n');
+  const envOnly=h.env.filter(x=>!h.saved.includes(x));
+  $('hol-env').innerHTML=(h.saved.length&&envOnly.length?`另有來自 Zeabur 變數 MARKET_HOLIDAYS 的日期：${envOnly.join('、')}（要刪除請到 Zeabur 清掉該變數）<br>`:'')
+    +`生效中（今天起）：${h.effective.filter(x=>x>=today).join('、')||'無'}`;
+}
+async function saveHolidays(){
+  const r=await fetch('/api/holidays',{method:'POST',headers:hdr(),body:JSON.stringify({text:$('hol-text').value})});
+  const d=await r.json().catch(()=>({}));
+  if(r.status===401){$('hol-msg').textContent='需要先登入';$('hol-msg').className='st-bad';return;}
+  if(!d.ok){$('hol-msg').textContent=d.error||'儲存失敗';$('hol-msg').className='st-bad';return;}
+  $('hol-msg').textContent='已儲存，立即生效';$('hol-msg').className='saved';
+  setTimeout(()=>$('hol-msg').textContent='',3000);
+  loadHolidays(); tick();
 }
 function jump(name){ const el=$('acc-'+name); if(!el)return; el.classList.add('open'); el.scrollIntoView({behavior:'smooth',block:'start'}); }
 async function saveConfig(){
