@@ -109,6 +109,8 @@
   .savebar .in{max-width:900px;margin:0 auto;display:flex;align-items:center;gap:12px}
   .page-cfg-on .savebar{display:block}
   .saved{color:var(--down)}
+  body.readonly .ctl button{opacity:.35}
+  body.readonly .ctl::before{content:'唯讀：操作前請先到「設定」登入';grid-column:1/-1;font-size:12px;color:var(--dim)}
   .btstats{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px;margin:10px 0}
   .btstats div{background:var(--bg);border-radius:8px;padding:8px}
   .btstats span{display:block;font-size:11px;color:var(--dim);margin-bottom:2px}
@@ -226,6 +228,7 @@ const cls=v=>v>0?'up':v<0?'down':'flat';
 const fmt=v=>v==null?'—':Number(v).toLocaleString('zh-TW');
 const sgn=v=>(v>0?'+':'')+v;
 let TOKEN=localStorage.getItem('txf_token')||'';
+let AUTH={protected:false,authed:true};
 const DBGOPEN=new Set(JSON.parse(localStorage.getItem('txf_dbg')||'[]'));
 function toggleDbg(n){
   DBGOPEN.has(n)?DBGOPEN.delete(n):DBGOPEN.add(n);
@@ -316,10 +319,15 @@ async function tick(){
 }
 
 async function post(path,confirmMsg,body){
+  if(AUTH.protected&&!AUTH.authed){
+    alert('目前是唯讀狀態，操作前請先到「設定」分頁輸入密碼登入。');
+    showPage('cfg',document.querySelectorAll('.tabs button')[2]);
+    return;
+  }
   if(confirmMsg&&!confirm(confirmMsg))return;
   try{
     const r=await fetch(path,{method:'POST',headers:hdr(),body:JSON.stringify(body||{})});
-    if(r.status===401){alert('需要先在「設定」分頁輸入密碼');showPage('cfg',document.querySelectorAll('.tabs button')[1]);return;}
+    if(r.status===401){alert('需要先在「設定」分頁輸入密碼');showPage('cfg',document.querySelectorAll('.tabs button')[2]);return;}
   }catch(e){alert('操作失敗：'+e);}
   tick();
 }
@@ -337,7 +345,8 @@ async function login(){
   if(d.ok){TOKEN=d.token||'';localStorage.setItem('txf_token',TOKEN);$('auth-msg').textContent='已登入';$('auth-msg').className='saved';$('pw').value='';loadConfig();}
   else{$('auth-msg').textContent=d.error||'失敗';$('auth-msg').className='st-bad';}
 }
-function setLock(d){ $('lock').textContent=d.protected?(d.authed?'已解鎖':'唯讀'):'未設密碼'; $('lock').className='lock '+(d.protected?(d.authed?'st-gold':''):'st-warn'); }
+function setLock(d){ AUTH=d; document.body.classList.toggle('readonly',!!(d.protected&&!d.authed));
+  $('lock').textContent=d.protected?(d.authed?'已解鎖':'唯讀'):'未設密碼'; $('lock').className='lock '+(d.protected?(d.authed?'st-gold':''):'st-warn'); }
 async function loadConfig(){
   const d=await fetch('/api/config',{headers:hdr()}).then(r=>r.json());
   setLock(d);

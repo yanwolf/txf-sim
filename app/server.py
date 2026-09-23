@@ -13,11 +13,34 @@ from .state import STATE
 HTML = (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
 PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 TOKENS = set()
+_TOKENS_LOADED = False
+
+
+def _load_tokens():
+    global _TOKENS_LOADED
+    if _TOKENS_LOADED:
+        return
+    try:
+        from .db import DB_
+        saved = DB_.get_kv("dashboard_tokens") or []
+        TOKENS.update(saved[-20:])
+        _TOKENS_LOADED = True
+    except Exception:
+        pass
+
+
+def _save_tokens():
+    try:
+        from .db import DB_
+        DB_.set_kv("dashboard_tokens", list(TOKENS)[-20:])
+    except Exception:
+        pass
 
 
 def _authed(handler):
     if not PASSWORD:
         return True
+    _load_tokens()
     return handler.headers.get("X-Token", "") in TOKENS
 
 
@@ -106,7 +129,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/login":
             body = self._body()
             if PASSWORD and hmac.compare_digest(str(body.get("password", "")), PASSWORD):
-                t = secrets.token_hex(16); TOKENS.add(t)
+                t = secrets.token_hex(16); TOKENS.add(t); _save_tokens()
                 self._send(200, {"ok": True, "token": t}); return
             if not PASSWORD:
                 self._send(200, {"ok": True, "token": ""}); return
