@@ -19,6 +19,8 @@ from .state import STATE, now
 from .strategies import REGISTRY
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "strategy_config.json")
+# 開機時策略若已持有部位：true = 立刻以市價對齊（跟上策略）；false = 不追單，等下一個新訊號
+STARTUP_ALIGN = os.getenv("STARTUP_ALIGN", "true").lower() == "true"
 
 
 class Portfolio:
@@ -31,6 +33,7 @@ class Portfolio:
         self.ready = False
         self.align_pending = False
         self._last_sync = 0.0
+        self._baseline_net = None      # STARTUP_ALIGN=false 時：開機當下的策略淨部位，不追這筆
         self.load_config()
 
     # ------------------------------------------------------------ 設定
@@ -206,7 +209,14 @@ class Portfolio:
         with self.lock:
             if self.align_pending and BROKER.ready:
                 self.align_pending = False
-                self._send_net(price, "啟動對齊")
+                if STARTUP_ALIGN:
+                    self._send_net(price, "啟動對齊")
+                else:
+                    self._baseline_net = self.net()
+                    with STATE.lock:
+                        pos = STATE.position
+                    if pos != self._baseline_net:
+                        STATE.log("INFO", f"STARTUP_ALIGN=false：策略目前淨部位 {self._baseline_net}、帳戶 {pos}，不追單，等下一個新訊號")
             else:
                 # 券商部位與策略淨部位不同（例如 kill 解除後、或委託失敗過）：每 60 秒嘗試對齊一次
                 import time as _t
@@ -214,7 +224,10 @@ class Portfolio:
                     self._last_sync = _t.time()
                     with STATE.lock:
                         pos, kill, halted, pending = STATE.position, STATE.kill, STATE.strategy_halted, STATE.pending_order
-                    if BROKER.ready and not kill and not halted and not pending and pos != self.net():
+                    net = self.net()
+                    if self._baseline_net is not None and net == self._baseline_net:
+                        pass                        # 開機時就有的部位，照設定不追
+                    elif BROKER.ready and not kill and not halted and not pending and pos != net:
                         self._send_net(price, "部位對齊")
             for m, strats in self.by_tf.items():
                 for s in strats:
@@ -231,6 +244,9 @@ class Portfolio:
         STATE.log("SIGNAL", f"{tag} {side} @ {price:.0f} {label} → MP={s.mp}")
         notify(f"{tag} {side} @ {price:.0f} {label}")
         if s.mode != "paper":
+            if self._baseline_net is not None:
+                # 開機時沒追的部位：策略出場時帳戶本來就沒有，不必送單；新進場則照常
+                self._baseline_net = None
             self._send_net(price, f"[{s.name}] {label}")
         self._persist()
 
