@@ -254,7 +254,7 @@ async function tick(){
     $('login').innerHTML=s.login_ok?`已登入（${s.simulation?'模擬':'正式'}）${fa?`<br><span class="${fa.signed?'st-ok':'st-bad'}" style="font-weight:400;font-size:12px">期貨戶${fa.signed?'已簽署':'未簽署'}</span>`:''}`:'未登入';
     $('d-sub').className='dot '+(s.subscribed?(s.tick_age_sec!=null&&s.tick_age_sec>120&&s.in_session?'warn':'on'):'bad');
     $('sub').textContent=s.subscribed?'訂閱中':'未訂閱';
-    $('sess').textContent=s.in_session?'盤中':'非交易時段';
+    $('sess').innerHTML=s.holiday?'<span class="st-warn">休市（假日）</span>':s.session_note?'<span class="st-warn">推定休市</span>':s.in_session?'盤中':'非交易時段';
     $('ticks').textContent=`${fmt(s.tick_count)} / ${s.last_tick_at||'—'}`;
     $('ohl').textContent=s.day_open==null?'—':`${fmt(s.day_open)} / ${fmt(s.day_high)} / ${fmt(s.day_low)}`;
     $('vol').textContent=fmt(s.day_volume);
@@ -283,7 +283,9 @@ async function tick(){
     if(s.pending_order) msgs.push('委託 '+s.pending_order+' 進行中');
     if(s.last_login_error) msgs.push('登入失敗：'+s.last_login_error);
     if(s.warmup_error) msgs.push('暖機回補失敗：'+s.warmup_error);
-    if(!s.in_session&&s.login_ok) msgs.push('非交易時段；日盤 08:45–13:45、夜盤 15:00–05:00');
+    if(s.session_note) msgs.push(s.session_note);
+    else if(!s.in_session&&s.login_ok) msgs.push('非交易時段；日盤 08:45–13:45、夜盤 15:00–05:00');
+    if(s.holidays&&s.holidays.length) msgs.push('近期休市：'+s.holidays.join('、'));
     b.style.display=msgs.length?'block':'none'; b.textContent=msgs.join('　|　'); b.className='banner'+(bad?' bad':'');
 
     const pf=s.portfolio||{strategies:[]};

@@ -54,6 +54,8 @@ class State:
         self.broker_position = None   # 券商回報的部位
         self.reconcile_ok = None
         self.mismatch_min = 0
+        self.session_note = None     # 例如「本時段無成交，推定休市」
+        self.last_tick_session = None
         self.order_contract = None    # 實際下單用的月合約代碼
         self.pending_order = None
         self.kill = False
@@ -134,6 +136,9 @@ class State:
                 "portfolio": __import__("app.portfolio", fromlist=["PORTFOLIO"]).PORTFOLIO.snapshot(),
                 "now": now().isoformat(timespec="seconds"),
                 "in_session": in_session(now()),
+                "holiday": is_holiday(now().date()),
+                "holidays": sorted(x.isoformat() for x in HOLIDAYS if x >= now().date())[:5],
+                "session_note": self.session_note,
             }
 
     def recent_bars(self, n=60):
@@ -163,6 +168,29 @@ def session_remaining_min(dt):
     return (5 * 60 - m) if m < 5 * 60 else (24 * 60 - m + 5 * 60)
 
 
+import os as _os
+from datetime import date as _date
+
+
+def _parse_holidays():
+    out = set()
+    for x in _os.getenv("MARKET_HOLIDAYS", "").replace("，", ",").split(","):
+        x = x.strip()
+        if x:
+            try:
+                out.add(_date.fromisoformat(x))
+            except ValueError:
+                pass
+    return out
+
+
+HOLIDAYS = _parse_holidays()
+
+
+def is_holiday(d):
+    return d in HOLIDAYS
+
+
 def in_session(dt):
     """台指期交易時段：日盤 08:45–13:45，夜盤 15:00–翌日 05:00。"""
     if dt.weekday() >= 5 and not (dt.weekday() == 5 and dt.hour < 5):
@@ -170,6 +198,13 @@ def in_session(dt):
     m = dt.hour * 60 + dt.minute
     if dt.weekday() == 0 and m < 5 * 60:     # 週一凌晨：週日沒有夜盤
         return False
+    if HOLIDAYS:
+        d = dt.date() if hasattr(dt, "date") else dt
+        if is_holiday(d) and m >= 5 * 60:          # 假日當天的日盤與晚上
+            return False
+        prev = d.fromordinal(d.toordinal() - 1)
+        if is_holiday(prev) and m < 5 * 60:        # 假日隔天凌晨（假日當晚沒有夜盤）
+            return False
     if 8 * 60 + 45 <= m <= 13 * 60 + 45:
         return True
     if m >= 15 * 60 or m < 5 * 60:

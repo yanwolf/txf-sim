@@ -8,6 +8,7 @@ import base64
 import shioaji as sj
 
 from .portfolio import PORTFOLIO
+from .tf import session_of as tf_session_of
 from .broker import BROKER, MODE
 from .db import DB_
 from .notify import notify
@@ -44,6 +45,7 @@ class Engine:
         self._cur_bar = None       # 正在累積的 1 分 K
         self._last_relogin = 0.0
         self._login_ts = 0.0
+        self._empty_retry_session = None   # 已為「整段無成交」重連過一次的時段
         self._legacy = False
         self._day = None
 
@@ -333,6 +335,9 @@ class Engine:
                 dt = dt.replace(tzinfo=TZ)
             with STATE.lock:
                 STATE.subscribed = True          # 有 tick 進來就是訂閱中
+                _ses = tf_session_of(dt.replace(tzinfo=None))
+                STATE.last_tick_session = _ses[0] if _ses else STATE.last_tick_session
+                STATE.session_note = None
                 STATE.tick_count += 1
                 STATE.last_tick_at = dt.strftime("%H:%M:%S")
                 STATE.last_tick_ts = time.time()
@@ -400,12 +405,26 @@ class Engine:
             self._refresh_usage()
         ref = max(STATE.last_tick_ts, self._login_ts)
         n = now()
-        if in_session(n) and session_remaining_min(n) > 5 and STATE.subscribed and time.time() - ref > STALE_SECONDS:
+        if not (in_session(n) and session_remaining_min(n) > 5 and time.time() - ref > STALE_SECONDS):
+            return
+        ses = tf_session_of(n.replace(tzinfo=None))
+        cur = ses[0] if ses else None
+        if STATE.last_tick_session == cur:
+            # 本時段有過成交、後來斷掉 → 真的斷線，持續重連
             STATE.log("WARN", f"盤中 {STALE_SECONDS} 秒沒有 tick，重新連線")
             notify(f"⚠️ 盤中 {STALE_SECONDS} 秒沒有 tick，重新連線", key="stale", cooldown=600)
             with STATE.lock:
                 STATE.subscribed = False
             self._connect()
+        elif self._empty_retry_session != cur:
+            # 本時段一筆都沒有 → 只重連一次確認
+            self._empty_retry_session = cur
+            STATE.log("WARN", "本時段尚無任何成交，重連一次確認")
+            self._connect()
+        elif STATE.session_note is None:
+            with STATE.lock:
+                STATE.session_note = "本時段無成交，推定休市（不再重連）"
+            STATE.log("INFO", "本時段重連後仍無成交，推定休市，不再重連")
 
 
 ENGINE = Engine()

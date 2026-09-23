@@ -184,8 +184,8 @@ class Broker:
 
     # ------------------------------------------------------------ 送單
     def _place(self, delta, ref_price, reason, retry=0, octype="Auto", then=None):
-        if not in_session(now()):
-            STATE.log("WARN", f"非交易時段，不送單（{reason}）")
+        if not in_session(now()) or STATE.session_note:
+            STATE.log("WARN", f"非交易時段或推定休市，不送單（{reason}）")
             return
         if self.api is None or self.contract is None or self.account is None:
             self._halt("下單層未就緒")
