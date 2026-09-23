@@ -18,12 +18,13 @@
 
   .top{position:sticky;top:0;z-index:10;background:rgba(21,23,28,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
   .top .in{max-width:900px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:10px}
-  .top .title{font-weight:600;flex:1}
+  .top .title{font-weight:600;flex:1;white-space:nowrap;min-width:0}
   .tabs{display:flex;gap:6px}
-  .tabs button{padding:6px 14px;border-radius:999px}
+  .tabs button{padding:6px 12px;border-radius:999px;white-space:nowrap}
   .tabs button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
-  .lock{font-size:12px;color:var(--dim);white-space:nowrap}
-  .lockbtn{padding:4px 10px;font-size:12px;border-radius:999px}
+  .lockpill{padding:5px 10px;font-size:12px;border-radius:999px;white-space:nowrap;color:var(--dim);background:transparent}
+  .lockpill.on{color:var(--gold);border-color:var(--gold)}
+  .lockpill.warn{color:var(--warn);border-color:var(--warn)}
 
   .wrap{max-width:900px;margin:0 auto;padding:14px 16px 90px}
   .page{display:none} .page.on{display:block}
@@ -128,8 +129,7 @@
     <button onclick="showPage('bt',this)">回測</button>
     <button onclick="showPage('cfg',this)">設定</button>
   </div>
-  <span id="lock" class="lock"></span>
-  <button id="btn-logout" class="lockbtn" onclick="logout()" style="display:none">登出</button>
+  <button id="lock" class="lockpill" onclick="lockClick()">唯讀</button>
 </div></div>
 
 <div class="wrap">
@@ -359,9 +359,14 @@ function setLock(d){
   AUTH=d; const ro=!!(d.protected&&!d.authed);
   document.body.classList.toggle('readonly',ro);
   const mins=d.left_sec?Math.ceil(d.left_sec/60):0;
-  $('lock').textContent=d.protected?(d.authed?`已解鎖 · ${mins} 分`:'唯讀'):'未設密碼';
-  $('lock').className='lock '+(d.protected?(d.authed?'st-gold':''):'st-warn');
-  $('btn-logout').style.display=d.protected&&d.authed?'inline-block':'none';
+  const el=$('lock');
+  if(!d.protected){el.textContent='未設密碼';el.className='lockpill warn';}
+  else if(d.authed){el.textContent=`登出 · ${mins}分`;el.className='lockpill on';}
+  else{el.textContent='唯讀';el.className='lockpill';}
+}
+function lockClick(){
+  if(AUTH.protected&&AUTH.authed) logout();
+  else if(AUTH.protected) showPage('cfg',document.querySelectorAll('.tabs button')[2]);
 }
 async function refreshAuth(){
   const d=await fetch('/api/auth',{headers:hdr()}).then(r=>r.json()).catch(()=>null);
@@ -377,7 +382,7 @@ async function logout(){
 }
 async function loadConfig(){
   const d=await fetch('/api/config',{headers:hdr()}).then(r=>r.json());
-  setLock(d);
+  refreshAuth();
   $('auth-card').style.display=d.protected&&!d.authed?'block':'none';
   $('btn-save').disabled=d.protected&&!d.authed;
   const open=new Set([...document.querySelectorAll('.acc.open')].map(x=>x.dataset.name));
