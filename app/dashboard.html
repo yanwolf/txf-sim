@@ -279,7 +279,7 @@ async function tick(){
     const pnlR=sigMode?s.virtual_pnl:s.realized_pnl, pnlU=sigMode?0:s.unrealized_pnl;
     $('pnl').innerHTML=`<span class="${cls(pnlR)}">${sgn(pnlR)}</span> + <span class="${cls(pnlU)}">${sgn(pnlU)}</span>`;
     $('bpos').innerHTML=sigMode?'—':(s.broker_position==null?'尚未對帳':`${s.broker_position} <span class="${s.reconcile_ok?'st-ok':(s.mismatch_min>=3?'st-bad':'st-warn')}">${s.reconcile_ok?'一致':(s.mismatch_min>=3?'不一致 '+s.mismatch_min+' 分':'不一致（觀察中）')}</span>`);
-    $('ocode').textContent=s.order_contract||'—';
+    $('ocode').innerHTML=(s.order_contract||'—')+(s.next_roll?`<br><span style="font-weight:400;font-size:12px;color:var(--dim)">${s.next_roll.at.slice(5)} 換 ${s.next_roll.to}</span>`:'');
     $('mode').innerHTML=({signal:'訊號模式（不下單）',sim:'模擬下單',live:'<span class="st-gold">正式下單</span>'})[s.mode]||s.mode;
     $('infra').innerHTML=`<span class="${s.db&&s.db.ok?'st-ok':'st-warn'}">${s.db?(s.db.ok?s.db.kind:'離線'):'—'}</span> / <span class="${s.telegram?'st-ok':'st-warn'}">${s.telegram?'已設定':'未設定'}</span>`;
     $('usage').textContent=s.usage?`${s.usage.bytes_mb} / ${s.usage.limit_mb} MB · ${s.usage.connections}`:'—';

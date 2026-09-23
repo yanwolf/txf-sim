@@ -55,6 +55,7 @@ class State:
         self.reconcile_ok = None
         self.mismatch_min = 0
         self.session_note = None     # 例如「本時段無成交，推定休市」
+        self.next_roll = None        # {"at": "2026-10-21 08:45", "to": "TMFK6"}
         self.last_tick_session = None
         self.order_contract = None    # 實際下單用的月合約代碼
         self.pending_order = None
@@ -139,6 +140,7 @@ class State:
                 "holiday": is_holiday(now().date()),
                 "holidays": sorted(x.isoformat() for x in HOLIDAYS if x >= now().date() and x.weekday() < 5)[:3],
                 "session_note": self.session_note,
+                "next_roll": self.next_roll,
             }
 
     def recent_bars(self, n=60):

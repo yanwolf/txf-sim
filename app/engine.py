@@ -18,6 +18,8 @@ API_KEY = os.getenv("SHIOAJI_API_KEY", "")
 SECRET_KEY = os.getenv("SHIOAJI_SECRET_KEY", "")
 CONTRACT_CODE = os.getenv("CONTRACT_CODE", "TXF").upper()
 ORDER_CONTRACT_CODE = os.getenv("ORDER_CONTRACT_CODE", CONTRACT_CODE).upper()   # 訊號看 TXF、下單下 TMF 之類
+ORDER_ROLL_TIME = int(os.getenv("ORDER_ROLL_TIME", "845"))    # 結算日當天幾點起改下次月（HHMM）
+DATA_ROLL_TIME = int(os.getenv("DATA_ROLL_TIME", "1330"))     # 結算日當天幾點起行情改訂閱次月（舊月 13:30 收盤）
 SIMULATION = os.getenv("SIMULATION", "true").lower() != "false"
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "45"))
 STALE_SECONDS = int(os.getenv("STALE_SECONDS", "180"))
@@ -46,6 +48,7 @@ class Engine:
         self._last_relogin = 0.0
         self._login_ts = 0.0
         self._empty_retry_session = None   # 已為「整段無成交」重連過一次的時段
+        self._data_code = None             # 行情實際訂閱的月合約代碼
         self._legacy = False
         self._day = None
 
@@ -171,6 +174,7 @@ class Engine:
         if self.contract is None:
             return
         self._warmup()
+        BROKER.contract_lookup = self._contract_by_code
         BROKER.attach(self.api, self._order_contract(), self._legacy)   # 先就緒、先對帳，再收行情
         self._subscribe()
         self._refresh_usage()
@@ -188,25 +192,75 @@ class Engine:
         except Exception as e:
             STATE.log("ERROR", f"憑證啟用失敗：{e!r}")
 
+    @staticmethod
+    def _digits(v):
+        return "".join(ch for ch in str(v) if ch.isdigit())
+
+    def _months(self, code):
+        """某商品尚未到期的月合約，依到期日排序。"""
+        group = getattr(self.api.Contracts.Futures, code)
+        today = self._digits(now().date())
+        cands = [x for x in group if len(x.code) == len(code) + 2 and self._digits(x.delivery_date) >= today]
+        return sorted(cands, key=lambda x: self._digits(x.delivery_date))
+
+    def _month_for(self, code, roll_hhmm):
+        """結算日當天 roll_hhmm 起改用次月，其餘時間用最近月。回 (合約, 下一個換月時點說明)。"""
+        ms = self._months(code)
+        if not ms:
+            return None, None
+        cur = ms[0]
+        n = now()
+        is_last_day = self._digits(cur.delivery_date) == self._digits(n.date())
+        if is_last_day and n.hour * 100 + n.minute >= roll_hhmm and len(ms) > 1:
+            return ms[1], None
+        nxt = ms[1].code if len(ms) > 1 else None
+        d = str(cur.delivery_date).replace("/", "-")
+        return cur, ({"at": f"{d} {roll_hhmm // 100:02d}:{roll_hhmm % 100:02d}", "to": nxt} if nxt else None)
+
     def _order_contract(self):
-        """R1 是連續合約代號，下單要用實際月合約（如 TXFJ6）。下單商品可與行情商品不同。"""
+        """下單用月合約（依換月規則）。下單商品可與行情商品不同。"""
         try:
-            code = ORDER_CONTRACT_CODE
-            group = getattr(self.api.Contracts.Futures, code)
-            digits = lambda v: "".join(ch for ch in str(v) if ch.isdigit())
-            # 先試該商品的 R1 指向的月合約
-            r1 = group.get(f"{code}R1") if hasattr(group, "get") else getattr(group, f"{code}R1", None)
-            target = getattr(r1, "target_code", None) if r1 is not None else None
-            if target:
-                c = group.get(target) if hasattr(group, "get") else getattr(group, target, None)
-                if c is not None:
-                    return c
-            today = digits(now().date())
-            cands = [x for x in group if len(x.code) == len(code) + 2 and digits(x.delivery_date) >= today]
-            return sorted(cands, key=lambda x: digits(x.delivery_date))[0]
+            c, nxt = self._month_for(ORDER_CONTRACT_CODE, ORDER_ROLL_TIME)
+            with STATE.lock:
+                STATE.next_roll = nxt
+            return c
         except Exception as e:
             STATE.log("ERROR", f"找不到下單用月合約 {ORDER_CONTRACT_CODE}：{e!r}")
             return None
+
+    def _contract_by_code(self, code):
+        try:
+            group = getattr(self.api.Contracts.Futures, code[:3])
+            return group.get(code) if hasattr(group, "get") else getattr(group, code, None)
+        except Exception:
+            return None
+
+    def _roll_check(self):
+        """看門狗每 30 秒呼叫：下單合約與行情訂閱是否該換月。"""
+        if self.api is None:
+            return
+        want = self._order_contract()
+        if want is not None:
+            BROKER.roll_to(want)
+        # 行情：結算日 13:30 起改訂閱次月
+        try:
+            data_c, _ = self._month_for(CONTRACT_CODE, DATA_ROLL_TIME)
+            if data_c is not None and self._data_code and data_c.code != self._data_code:
+                old = self._data_code
+                try:
+                    old_c = self._contract_by_code(old)
+                    if old_c is not None:
+                        (self.api.quote.unsubscribe if self._legacy else self.api.unsubscribe)(
+                            old_c, quote_type=sj.constant.QuoteType.Tick, version=sj.constant.QuoteVersion.v1)
+                except Exception as e:
+                    STATE.log("WARN", f"取消訂閱 {old} 失敗（可忽略）：{e!r}")
+                (self.api.quote.subscribe if self._legacy else self.api.subscribe)(
+                    data_c, quote_type=sj.constant.QuoteType.Tick, version=sj.constant.QuoteVersion.v1)
+                self._data_code = data_c.code
+                STATE.log("WARN", f"行情換月：{old} → {data_c.code}")
+                notify(f"行情換月：{old} → {data_c.code}")
+        except Exception as e:
+            STATE.log("ERROR", f"行情換月失敗：{e!r}")
 
     def _pick_contract(self):
         try:
@@ -305,7 +359,8 @@ class Engine:
                                    version=sj.constant.QuoteVersion.v1)
             with STATE.lock:
                 STATE.subscribed = True
-            STATE.log("INFO", f"已訂閱 {self.contract.code} Tick")
+            self._data_code = getattr(self.contract, "target_code", None) or self.contract.code
+            STATE.log("INFO", f"已訂閱 {self.contract.code} Tick（實際月份 {self._data_code}）")
         except Exception as e:
             with STATE.lock:
                 STATE.subscribed = False
@@ -406,6 +461,10 @@ class Engine:
     def _watchdog(self):
         STATE.db = DB_.status()
         BROKER.tick_watchdog()
+        try:
+            self._roll_check()
+        except Exception as e:
+            STATE.log("ERROR", f"換月檢查錯誤：{e!r}")
         if not STATE.login_ok:
             STATE.log("WARN", "未登入，嘗試重連")
             self._connect()

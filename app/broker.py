@@ -52,7 +52,7 @@ def _ts():
 def _net_from_positions(positions, order_code):
     """把券商部位加總成淨口數。以商品前綴（例如 TMF）比對，避免月份代碼格式差異導致讀成 0。"""
     root = (order_code or "")[:3]
-    net, rows, avg = 0, [], None
+    net, rows, avg, by_code = 0, [], None, {}
     for p in positions or []:
         pc = str(getattr(p, "code", ""))
         q = abs(int(getattr(p, "quantity", 0) or 0))
@@ -60,10 +60,12 @@ def _net_from_positions(positions, order_code):
         rows.append(f"{pc} {d} {q}")
         if not root or not pc.startswith(root):
             continue
-        net += q if "Buy" in d else -q
+        signed = q if "Buy" in d else -q
+        net += signed
+        by_code[pc] = by_code.get(pc, 0) + signed
         if getattr(p, "price", None):
             avg = float(p.price)
-    return net, rows, avg
+    return net, rows, avg, by_code
 
 
 class Broker:
@@ -83,6 +85,9 @@ class Broker:
         self._deferred = None      # pending 時來的新目標，成交後補送
         self.ready = False         # 下單層就緒且已完成啟動對帳
         self._last_fill_ts = 0.0
+        self.contract_lookup = None   # engine 注入：代碼 → 合約物件
+        self._roll_target = None
+        self._roll_wait_logged = None
         STATE.mode = MODE
 
     # ------------------------------------------------------------ 初始化
@@ -161,7 +166,7 @@ class Broker:
         # 啟動對帳：券商是唯一真相，開機時一律採用券商部位（不受 RECONCILE_ADOPT 影響）
         try:
             positions = self.api.list_positions(self.account)
-            net, rows, avg = _net_from_positions(positions, STATE.order_contract)
+            net, rows, avg, by_code = _net_from_positions(positions, STATE.order_contract)
             STATE.log("INFO", f"啟動對帳：券商原始部位 {rows or '空'}")
             with STATE.lock:
                 old = STATE.position
@@ -176,6 +181,16 @@ class Broker:
                 STATE.log("WARN", f"啟動對帳：內部 {old} → 採用券商實際部位 {net}")
             else:
                 STATE.log("INFO", f"啟動對帳：券商部位 {net}，與內部一致")
+            held_other = {c: q for c, q in by_code.items() if q and c != STATE.order_contract}
+            if held_other and self.contract_lookup:
+                oc = list(held_other)[0]
+                oldc = self.contract_lookup(oc)
+                if oldc is not None:
+                    self._roll_target = self.contract          # 換月的目標（應下的月份）
+                    self.contract = oldc                       # 先指向實際持有的舊月，由 roll_to 接手
+                    with STATE.lock:
+                        STATE.order_contract = oldc.code
+                    STATE.log("WARN", f"啟動對帳：帳戶持有 {oc} {held_other[oc]} 口（非目前下單月份），將執行換月")
             self.persist()
             self.ready = True
         except Exception as e:
@@ -219,6 +234,47 @@ class Broker:
             oc = "Cover" if (pos != 0 and abs(target) < abs(pos) and (target == 0 or (target > 0) == (pos > 0))) else "Auto"
             self._place(delta, price, reason, octype=oc)
 
+    def roll_to(self, new_contract):
+        """把下單合約換到 new_contract；手上若有舊月部位，先平舊月、成交後開同向同量的新月。"""
+        old = self.contract
+        new_code = getattr(new_contract, "code", None)
+        if new_code is None or (old is not None and old.code == new_code):
+            return
+        with STATE.lock:
+            pos, price = STATE.position, STATE.last_price
+            kill, halted = STATE.kill, STATE.strategy_halted
+        tag = f"{getattr(old, 'code', '—')} → {new_code}"
+
+        def _switch():
+            self.contract = new_contract
+            with STATE.lock:
+                STATE.order_contract = new_code
+            self.persist()
+
+        if MODE == "signal" or pos == 0:
+            _switch()
+            STATE.log("INFO", f"下單換月：{tag}（空手，直接切換）")
+            notify(f"下單換月：{tag}（空手）")
+            return
+        if not self.ready or self.pending:
+            return
+        if not in_session(now()) or STATE.session_note or price is None:
+            if self._roll_wait_logged != new_code:
+                self._roll_wait_logged = new_code
+                STATE.log("WARN", f"換月待執行：{tag}，持倉 {pos} 口，等開盤有報價再換")
+            return
+        if kill or halted:
+            # 風控停止中：只平舊月，不開新月
+            STATE.log("WARN", f"換月（風控停止中，只平舊月）：{tag}")
+            _switch()
+            self._place(-pos, price, f"換月 {tag}／只平舊月", octype="Cover", contract=old, roll=True)
+            return
+        STATE.log("WARN", f"換月：{tag}，持倉 {pos} 口，先平舊月再開新月")
+        notify(f"換月：{tag}，持倉 {pos} 口")
+        _switch()   # 先切換；兩張單都明確指定月份，不依賴切換與回報的先後
+        self._place(-pos, price, f"換月 {tag}／平舊月", octype="Cover", contract=old, roll=True,
+                    then=(pos, price, f"換月 {tag}／開新月", new_contract))
+
     # ------------------------------------------------------------ 虛擬成交
     def _virtual_fill(self, target, price):
         with STATE.lock:
@@ -237,20 +293,21 @@ class Broker:
         self.persist()
 
     # ------------------------------------------------------------ 送單
-    def _place(self, delta, ref_price, reason, retry=0, octype="Auto", then=None):
+    def _place(self, delta, ref_price, reason, retry=0, octype="Auto", then=None, contract=None, roll=False):
         if not in_session(now()) or STATE.session_note:
             STATE.log("WARN", f"非交易時段或推定休市，不送單（{reason}）")
             return
-        if self.api is None or self.contract is None or self.account is None or not self.ready:
+        contract = contract or self.contract
+        if self.api is None or contract is None or self.account is None or not self.ready:
             STATE.log("WARN", f"下單層尚未就緒，略過（{reason}）；就緒後會自動對齊")
             return
         action = Action.Buy if delta > 0 else Action.Sell
         qty = abs(delta)
         oid = f"local-{uuid.uuid4().hex[:8]}"
-        rec = {"id": oid, "t": _ts(), "code": STATE.order_contract, "action": "Buy" if delta > 0 else "Sell",
+        rec = {"id": oid, "t": _ts(), "code": getattr(contract, "code", STATE.order_contract), "action": "Buy" if delta > 0 else "Sell",
                "qty": qty, "price": 0, "status": "sending", "filled_qty": 0, "avg_price": None,
                "msg": "", "reason": reason, "mode": MODE, "sent_at": time.time(), "retry": retry,
-               "octype": octype, "then": then}
+               "octype": octype, "then": then, "_contract": contract, "roll": roll}
         with self.lock:
             self.orders[oid] = rec
             self.pending = oid
@@ -261,7 +318,7 @@ class Broker:
             oc = {"Cover": OC.Cover, "New": OC.New}.get(octype, OC.Auto)
             order = FuturesOrder(action=action, price=0, quantity=qty, price_type=FPT.MKT,
                                  order_type=OT.IOC, octype=oc, account=self.account)
-            trade = self.api.place_order(self.contract, order)
+            trade = self.api.place_order(contract, order)
             real_id = getattr(trade.order, "id", None) or getattr(trade.order, "seqno", None) or oid
             st = getattr(trade.status, "status", None)
             with self.lock:
@@ -375,9 +432,10 @@ class Broker:
                 nxt = rec.pop("then", None)
             DB_.upsert_order(rec)
             if nxt:
-                target, p2, r2 = nxt
-                threading.Thread(target=self._place, args=(target, p2, r2), kwargs={"octype": "New"},
-                                 daemon=True).start()
+                target, p2, r2 = nxt[:3]
+                c2 = nxt[3] if len(nxt) > 3 else rec.get("_contract")   # 未指定就沿用同一張單的月份
+                threading.Thread(target=self._place, args=(target, p2, r2),
+                                 kwargs={"octype": "New", "contract": c2}, daemon=True).start()
             elif rec["status"] == "filled" and self._deferred and not self.pending:
                 d, self._deferred = self._deferred, None
                 threading.Thread(target=self.set_net, args=d, daemon=True).start()
@@ -423,9 +481,13 @@ class Broker:
             STATE.log("INFO", "重送一次")
             delta = remaining if rec["action"] == "Buy" else -remaining
             self._place(delta, rec.get("price"), rec["reason"] + "（重送）", retry=1,
-                        octype=rec.get("octype", "Auto"), then=rec.get("then"))
+                        octype=rec.get("octype", "Auto"), then=rec.get("then"),
+                        contract=rec.get("_contract"), roll=rec.get("roll", False))
         else:
             self.failures += 1
+            if rec.get("roll"):
+                rec["then"] = None
+                self._halt(f"換月平舊月未成交（{rec.get('code')}），請手動確認舊月部位")
             self._check_failures()
 
     def _order_failed(self, rec, msg):
@@ -437,6 +499,9 @@ class Broker:
         self.failures += 1
         STATE.log("ERROR", f"委託失敗 {rec['id']}：{msg}")
         notify(f"⚠️ 委託失敗：{msg}")
+        if rec.get("roll"):
+            rec["then"] = None
+            self._halt(f"換月平舊月失敗（{rec.get('code')}），請手動確認舊月部位")
         DB_.upsert_order(rec)
         self._check_failures()
 
@@ -546,7 +611,7 @@ class Broker:
     def reconcile(self, manual=False):
         try:
             positions = self.api.list_positions(self.account)
-            net, rows, _ = _net_from_positions(positions, STATE.order_contract)
+            net, rows, _, _ = _net_from_positions(positions, STATE.order_contract)
             with STATE.lock:
                 mine = STATE.position
                 STATE.broker_position = net
