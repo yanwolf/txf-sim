@@ -12,7 +12,7 @@ from .tf import session_of as tf_session_of
 from .broker import BROKER, MODE
 from .db import DB_
 from .notify import notify
-from .state import STATE, TZ, in_session, now, session_remaining_min
+from .state import STATE, TZ, in_session, now, session_remaining_min, session_dead, is_holiday
 
 API_KEY = os.getenv("SHIOAJI_API_KEY", "")
 SECRET_KEY = os.getenv("SHIOAJI_SECRET_KEY", "")
@@ -24,6 +24,8 @@ SIMULATION = os.getenv("SIMULATION", "true").lower() != "false"
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "45"))
 STALE_SECONDS = int(os.getenv("STALE_SECONDS", "180"))
 MIN_RELOGIN_GAP = 300  # 秒。避免重連風暴撞到每日登入次數上限
+PRE_OPEN_RELOGIN = [(835, 844), (1450, 1459)]   # 開盤前例行換新登入的時間窗（HHMM）
+PRE_OPEN_MIN_AGE = 4 * 3600                      # 距上次登入超過幾秒才換新
 LIVE_CONFIRM = os.getenv("LIVE_CONFIRM", "") == "YES"
 CA_PFX_BASE64 = os.getenv("CA_PFX_BASE64", "")
 CA_PASSWORD = os.getenv("CA_PASSWORD", "")
@@ -49,6 +51,7 @@ class Engine:
         self._login_ts = 0.0
         self._empty_retry_session = None   # 已為「整段無成交」重連過一次的時段
         self._data_code = None             # 行情實際訂閱的月合約代碼
+        self._usage_fail = 0
         self._legacy = False
         self._day = None
 
@@ -161,6 +164,7 @@ class Engine:
                     for a in (accounts or [])
                 ]
             STATE.log("INFO", f"登入成功（{'模擬' if SIMULATION else '正式'}），帳號 {len(accounts or [])} 個")
+            STATE.need_relogin = None
         except Exception as e:
             with STATE.lock:
                 STATE.login_ok = False
@@ -382,8 +386,15 @@ class Engine:
                     "limit_mb": round(u.limit_bytes / 1e6, 1),
                     "remaining_mb": round(u.remaining_bytes / 1e6, 1),
                 }
+            if self._usage_fail:
+                STATE.log("INFO", f"用量查詢恢復（先前連續失敗 {self._usage_fail} 次）")
+            self._usage_fail = 0
         except Exception as e:
-            STATE.log("WARN", f"查詢 usage 失敗：{e!r}")
+            self._usage_fail += 1
+            if session_dead(e):
+                STATE.need_relogin = STATE.need_relogin or "用量查詢回報憑證過期／連線未建立"
+            if self._usage_fail == 1 or self._usage_fail % 30 == 0:
+                STATE.log("WARN", f"查詢 usage 失敗（連續 {self._usage_fail} 次）：{e!r}")
 
     # ------------------------------------------------------------ 回呼
     def _on_event(self, resp_code, event_code, info, event):
@@ -475,7 +486,23 @@ class Engine:
             STATE.log("WARN", "未登入，嘗試重連")
             self._connect()
             return
-        if int(time.time()) % 300 < 30:
+        n0 = now()
+        # 1) 偵測到憑證過期/連線失效 → 重新登入（不論是否盤中；_connect 內有 5 分鐘間隔保護）
+        if STATE.need_relogin:
+            STATE.log("WARN", f"{STATE.need_relogin}，重新登入")
+            notify(f"⚠️ {STATE.need_relogin}，重新登入", key="relogin", cooldown=1800)
+            self._connect()
+            return
+        # 2) 開盤前例行換新：確保每個盤都用新憑證開始，不會在盤中過期
+        hm = n0.hour * 100 + n0.minute
+        if n0.weekday() < 5 and not is_holiday(n0.date()) \
+                and any(a <= hm <= b for a, b in PRE_OPEN_RELOGIN) \
+                and time.time() - self._login_ts > PRE_OPEN_MIN_AGE:
+            STATE.log("INFO", "開盤前例行重新登入（更新憑證）")
+            self._connect()
+            return
+        # 3) 用量：盤中每 5 分鐘
+        if int(time.time()) % 300 < 30 and in_session(n0):
             self._refresh_usage()
         ref = max(STATE.last_tick_ts, self._login_ts)
         n = now()

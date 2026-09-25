@@ -21,7 +21,7 @@ import shioaji as sj
 
 from .db import DB_
 from .notify import notify
-from .state import STATE, in_session, now
+from .state import STATE, in_session, now, session_dead
 
 MODE = os.getenv("MODE", "signal").lower()
 SIMULATION = os.getenv("SIMULATION", "true").lower() != "false"
@@ -244,6 +244,8 @@ class Broker:
         except Exception as e:
             self.ready = False
             self._startup_fail += 1
+            if session_dead(e):
+                STATE.need_relogin = STATE.need_relogin or "開機對帳回報憑證過期／連線未建立"
             if self._startup_fail == 1:
                 STATE.log("WARN", f"啟動對帳暫時失敗，每分鐘重試，成功前不下單：{e!r}")
                 if in_session(now()):
@@ -283,6 +285,8 @@ class Broker:
                 notify(f"⚠️ 可用保證金 {self.margin['available_margin']:,.0f} 元，低於警示門檻 {MARGIN_ALERT_AVAILABLE:,.0f}",
                        key="margin_low", cooldown=3600)
         except Exception as e:
+            if session_dead(e):
+                STATE.need_relogin = STATE.need_relogin or "保證金查詢回報憑證過期／連線未建立"
             if self.margin is None or in_session(now()):
                 STATE.log("WARN", f"保證金查詢失敗：{e!r}")
 
@@ -382,6 +386,8 @@ class Broker:
             STATE.log("ORDER", f"送單 {rec['action']} {qty} 口 市價 IOC {octype}（{reason}）→ {real_id} {st}")
             self._sync_trade(trade)
         except Exception as e:
+            if session_dead(e):
+                STATE.need_relogin = STATE.need_relogin or "送單回報憑證過期／連線未建立"
             self._order_failed(rec, f"送單例外：{e!r}")
         DB_.upsert_order(rec)
 
@@ -713,6 +719,8 @@ class Broker:
                     self.adopt_broker()
         except Exception as e:
             self._recon_fail += 1
+            if session_dead(e):
+                STATE.need_relogin = STATE.need_relogin or "對帳回報憑證過期／連線未建立"
             if self._recon_fail == 1 or self._recon_fail % 30 == 0:
                 STATE.log("WARN", f"對帳失敗（連續 {self._recon_fail} 次）：{e!r}")
             return

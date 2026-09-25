@@ -16,6 +16,16 @@ import re as _re
 _ID_RE = _re.compile(r"\b([A-Z])[12](\d{8})\b")    # 台灣身分證字號
 
 
+_DEAD_MARKERS = ("token is expired", "tokenerror", "sessionnotestablished", "notready",
+                 "statuscode: 401", "not logged in", "session error")
+
+
+def session_dead(err):
+    """券商回傳的錯誤是否代表登入憑證過期或連線已斷（需重新登入）。"""
+    t = repr(err).lower()
+    return any(m in t for m in _DEAD_MARKERS)
+
+
 def mask_ids(text):
     """把身分證字號遮成 A1******89，避免出現在儀表板或通知裡。"""
     return _ID_RE.sub(lambda m: m.group(1) + "*" * 7 + m.group(2)[-2:], str(text))
@@ -65,6 +75,7 @@ class State:
         self.mismatch_min = 0
         self.session_note = None     # 例如「本時段無成交，推定休市」
         self.next_roll = None        # {"at": "2026-10-21 08:45", "to": "TMFK6"}
+        self.need_relogin = None     # 偵測到憑證過期/連線失效時的原因字串
         self.last_tick_session = None
         self.order_contract = None    # 實際下單用的月合約代碼
         self.pending_order = None
