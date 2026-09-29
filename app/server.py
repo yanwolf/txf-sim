@@ -157,6 +157,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+        elif u.path == "/api/hist/summary":
+            from .db import DB_
+            self._send(200, {"years": DB_.hist_summary()}); return
         elif u.path == "/api/margin":
             if not _authed(self):
                 self._send(200, {"locked": True}); return
@@ -183,6 +186,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         u = urlparse(self.path)
+        q = parse_qs(u.query)
         if u.path == "/api/login":
             body = self._body()
             if PASSWORD and hmac.compare_digest(str(body.get("password", "")), PASSWORD):
@@ -202,6 +206,22 @@ class Handler(BaseHTTPRequestHandler):
             from .portfolio import PORTFOLIO
             body = self._body()
             PORTFOLIO.apply_config(body.get("strategies", {}))
+            self._send(200, {"ok": True}); return
+        if u.path == "/api/hist/upload":
+            from .db import DB_
+            from .histimport import parse_chunk
+            n = int(self.headers.get("Content-Length", "0") or 0)
+            if n > 8 * 1024 * 1024:
+                self._send(413, {"ok": False, "error": "單塊超過 8MB"}); return
+            text = self.rfile.read(n).decode("utf-8", errors="replace")
+            mode = q.get("label", ["end"])[0]
+            rows, st = parse_chunk(text, "start" if mode == "start" else "end")
+            DB_.upsert_hist(rows)
+            self._send(200, {"ok": True, **st}); return
+        if u.path == "/api/hist/clear":
+            from .db import DB_
+            DB_.hist_clear()
+            STATE.log("WARN", "已清除全部 MC 歷史資料")
             self._send(200, {"ok": True}); return
         if u.path == "/api/holidays":
             from .state import parse_date_list, set_saved_holidays, HOLIDAYS, STATE

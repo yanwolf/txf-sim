@@ -13,6 +13,8 @@ DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 
 SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS hist_bars (
+        ts TEXT PRIMARY KEY, open REAL, high REAL, low REAL, close REAL, volume INTEGER)""",
     """CREATE TABLE IF NOT EXISTS bars (
         ts TEXT PRIMARY KEY, open REAL, high REAL, low REAL, close REAL, volume INTEGER, src TEXT)""",
     """CREATE TABLE IF NOT EXISTS signals (
@@ -25,6 +27,8 @@ SCHEMA = [
     """CREATE TABLE IF NOT EXISTS fills (
         id {SERIAL}, t TEXT, order_id TEXT, code TEXT, action TEXT, price REAL, qty INTEGER)""",
     """CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)""",
+    # 外部匯入的歷史 1 分 K（MultiCharts 匯出）。ts = K 棒開始時間，1970-01-01 起算的分鐘數（台北時間）
+    """CREATE TABLE IF NOT EXISTS hist_bars (ts BIGINT PRIMARY KEY, o REAL, h REAL, l REAL, c REAL, v INTEGER)""",
 ]
 
 
@@ -164,6 +168,59 @@ class DB:
         except Exception:
             return default
 
+    # ---------------- 歷史資料（MultiCharts 匯出）----------------
+    def upsert_hist(self, rows):
+        """rows: [(ts, o, h, l, c, v)]。Postgres 用 COPY 進暫存表再合併，幾萬筆一秒內。"""
+        if not rows:
+            return 0
+        with self.lock:
+            for attempt in (1, 2):
+                try:
+                    if self.conn is None and not self.connect():
+                        return 0
+                    if self.kind == "postgres":
+                        with self.conn.transaction():
+                            with self.conn.cursor() as cur:
+                                cur.execute("CREATE TEMP TABLE IF NOT EXISTS _hist_in (ts TEXT, open REAL, high REAL, "
+                                            "low REAL, close REAL, volume INTEGER) ON COMMIT DELETE ROWS")
+                                with cur.copy("COPY _hist_in (ts,open,high,low,close,volume) FROM STDIN") as cp:
+                                    for r in rows:
+                                        cp.write_row(r)
+                                cur.execute("""INSERT INTO hist_bars SELECT DISTINCT ON (ts) * FROM _hist_in ORDER BY ts
+                                               ON CONFLICT (ts) DO UPDATE SET open=EXCLUDED.open,high=EXCLUDED.high,
+                                               low=EXCLUDED.low,close=EXCLUDED.close,volume=EXCLUDED.volume""")
+                    else:
+                        self.conn.execute("BEGIN")
+                        self.conn.executemany("INSERT OR REPLACE INTO hist_bars (ts,open,high,low,close,volume) "
+                                              "VALUES (?,?,?,?,?,?)", rows)
+                        self.conn.execute("COMMIT")
+                    return len(rows)
+                except Exception as e:
+                    self.error = repr(e); self.ok = False; self.conn = None
+                    if attempt == 2:
+                        raise
+
+    def hist_summary(self):
+        rows = self.run("SELECT substr(ts,1,4) AS y, COUNT(*), MIN(ts), MAX(ts) FROM hist_bars GROUP BY y ORDER BY y",
+                        fetch=True) or []
+        return [{"year": r[0], "bars": r[1], "from": r[2], "to": r[3]} for r in rows]
+
+    def hist_clear(self):
+        self.run("DELETE FROM hist_bars")
+
+    def count_range(self, table, start_ts, end_ts):
+        r = self.run(f"SELECT COUNT(*) FROM {table} WHERE ts >= ? AND ts <= ?", (start_ts, end_ts), fetch=True)
+        return int(r[0][0]) if r else 0
+
+    def load_range(self, table, start_ts, end_ts):
+        """讀取區間內的 1 分 K（ts 為開始時間 'YYYY-MM-DD HH:MM'），由舊到新。"""
+        cols = "ts,open,high,low,close,volume"
+        rows = self.run(f"SELECT {cols} FROM {table} WHERE ts >= ? AND ts <= ? ORDER BY ts",
+                        (start_ts, end_ts), fetch=True) or []
+        src = "mc" if table == "hist_bars" else "hist"
+        return [{"ts": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5], "src": src}
+                for r in rows]
+
     def load_bars(self, n=600):
         rows = self.run("SELECT ts,open,high,low,close,volume,src FROM bars ORDER BY ts DESC LIMIT ?", (n,), fetch=True) or []
         return [{"ts": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5], "src": r[6]}
@@ -182,6 +239,53 @@ class DB:
     def load_fills_today(self, day):
         rows = self.run("SELECT t,order_id,code,action,price,qty FROM fills WHERE t LIKE ? ORDER BY id", (f"{day}%",), fetch=True) or []
         return [{"t": r[0], "order_id": r[1], "code": r[2], "action": r[3], "price": r[4], "qty": r[5]} for r in rows]
+
+    # ---------------------------------------------------------------- 歷史資料（匯入）
+    def hist_upsert_many(self, rows):
+        """rows: [(ts_min, o, h, l, c, v)]，同一分鐘重複匯入會覆蓋。"""
+        if not rows:
+            return True
+        if self.kind == "postgres":
+            sql = """INSERT INTO hist_bars (ts,o,h,l,c,v) VALUES (%s,%s,%s,%s,%s,%s)
+                     ON CONFLICT (ts) DO UPDATE SET o=EXCLUDED.o,h=EXCLUDED.h,l=EXCLUDED.l,c=EXCLUDED.c,v=EXCLUDED.v"""
+        else:
+            sql = "INSERT OR REPLACE INTO hist_bars (ts,o,h,l,c,v) VALUES (?,?,?,?,?,?)"
+        with self.lock:
+            for attempt in (1, 2):
+                try:
+                    if self.conn is None and not self.connect():
+                        return False
+                    if self.kind == "postgres":
+                        with self.conn.transaction():
+                            with self.conn.cursor() as cur:
+                                cur.executemany(sql, rows)
+                    else:
+                        self.conn.execute("BEGIN")
+                        self.conn.executemany(sql, rows)
+                        self.conn.execute("COMMIT")
+                    return True
+                except Exception as e:
+                    self.error = repr(e); self.ok = False; self.conn = None
+                    if attempt == 2:
+                        print(f"[DB] hist_upsert_many failed: {e!r}", flush=True)
+                        return False
+
+    def hist_stats(self):
+        r = self.run("SELECT COUNT(*), MIN(ts), MAX(ts) FROM hist_bars", fetch=True)
+        if not r:
+            return {"count": 0, "first": None, "last": None}
+        n, a, b = r[0]
+        f = lambda m: (datetime(1970, 1, 1) + timedelta(minutes=int(m))).strftime("%Y-%m-%d %H:%M") if m is not None else None
+        return {"count": int(n or 0), "first": f(a), "last": f(b)}
+
+    def hist_load(self, a_min, b_min):
+        """載入 [a_min, b_min] 的歷史 1 分 K，回 list of dict（與 bars 表同格式）。"""
+        rows = self.run("SELECT ts,o,h,l,c,v FROM hist_bars WHERE ts>=? AND ts<=? ORDER BY ts",
+                        (int(a_min), int(b_min)), fetch=True) or []
+        base = datetime(1970, 1, 1)
+        return [{"ts": (base + timedelta(minutes=int(t))).strftime("%Y-%m-%d %H:%M"),
+                 "open": float(o), "high": float(h), "low": float(l), "close": float(c),
+                 "volume": int(v or 0), "src": "mc"} for t, o, h, l, c, v in rows]
 
     def trim(self, days=14):
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")

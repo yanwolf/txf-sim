@@ -114,6 +114,8 @@
   .savebar .in{max-width:900px;margin:0 auto;display:flex;align-items:center;gap:12px}
   .page-cfg-on .savebar{display:block}
   .saved{color:var(--down)}
+  .bar{height:6px;background:var(--bg);border-radius:3px;overflow:hidden;margin:6px 0}
+  .bar div{height:100%;width:0;background:var(--gold);transition:width .2s}
   body.readonly .ctl button{opacity:.35}
   body.readonly .ctl::before{content:'唯讀：操作前請先到「設定」登入';grid-column:1/-1;font-size:12px;color:var(--dim)}
   .btstats{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px;margin:10px 0}
@@ -195,6 +197,21 @@
 
   <div id="page-bt" class="page">
     <div class="card">
+      <h3>歷史資料匯入（MultiCharts 匯出）</h3>
+      <div class="desc">格式：Symbol, Date, Time, Open, High, Low, Close, TotalVolume（1 分 K）。可一次選多個檔案，會切成小塊依序上傳，重複匯入同一段會覆蓋、不會重複。建議用電腦的瀏覽器上傳。</div>
+      <div class="row">
+        <input type="file" id="hist-files" accept=".csv,.txt" multiple>
+      </div>
+      <div class="row">
+        <label>時間代表 <select id="hist-label"><option value="end">K 棒結束時間（MC 預設）</option><option value="start">K 棒開始時間</option></select></label>
+        <button class="primary" id="hist-go" onclick="histUpload()">開始匯入</button>
+        <button id="hist-stop" onclick="HIST_STOP=true" style="display:none">停止</button>
+      </div>
+      <div id="hist-prog" style="font-size:13px"></div>
+      <div class="bar" id="hist-bar" style="display:none"><div id="hist-fill"></div></div>
+      <div id="hist-sum" class="desc" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
       <h3>回測條件</h3>
       <div class="desc">用與即時完全相同的策略邏輯重播歷史 1 分 K，逐筆模擬觸價成交。暖機期只餵指標不計交易，避免 AvgRange(200)、MA175 等長週期指標在前期失真而污染統計。</div>
       <div class="row">
@@ -202,6 +219,7 @@
         <label>訖 <input type="date" id="bt-end"></label>
       </div>
       <div class="row">
+        <label>資料 <select id="bt-src"><option value="live">永豐即時累積</option><option value="mc">MC 歷史（之後接永豐）</option></select></label>
         <label>暖機 <input type="number" id="bt-warm" value="15" min="0" style="width:60px"> 交易日</label>
         <label>商品 <select id="bt-contract"><option value="TMF">微台（10元/點）</option><option value="MXF">小台（50元/點）</option><option value="TXF">大台（200元/點）</option></select></label>
         <label>單邊成本 <input type="number" id="bt-cost" value="2" step="0.5" style="width:70px"> 點</label>
@@ -375,7 +393,7 @@ function showPage(p,btn){
   document.body.classList.toggle('page-cfg-on',p==='cfg');
   window.scrollTo(0,0);
   if(p==='cfg'){loadConfig();loadHolidays();}
-  if(p==='bt')initBT();
+  if(p==='bt'){initBT();histSummary();}
 }
 async function login(){
   const r=await fetch('/api/login',{method:'POST',headers:hdr(),body:JSON.stringify({password:$('pw').value})});
@@ -467,6 +485,60 @@ async function saveConfig(){
   $('save-msg').textContent='已儲存，重播中…';$('save-msg').className='saved';
   setTimeout(()=>{$('save-msg').textContent='';loadConfig();},4000);
 }
+// ============ 歷史資料匯入 ============
+let HIST_STOP=false;
+const CHUNK=2*1024*1024;
+async function histSummary(){
+  const d=await fetch('/api/hist/summary',{headers:hdr()}).then(r=>r.json()).catch(()=>null);
+  if(!d)return;
+  if(!d.years.length){$('hist-sum').textContent='目前沒有 MC 歷史資料。';return;}
+  const tot=d.years.reduce((a,y)=>a+y.bars,0);
+  $('hist-sum').innerHTML=`已匯入 ${tot.toLocaleString()} 根，${d.years[0].from} ～ ${d.years[d.years.length-1].to}<br>`+
+    d.years.map(y=>`${y.year}：${y.bars.toLocaleString()}`).join('　');
+}
+async function histUpload(){
+  if(AUTH.protected&&!AUTH.authed){alert('請先到「設定」分頁登入');return;}
+  const files=[...$('hist-files').files];
+  if(!files.length){alert('請先選擇檔案');return;}
+  HIST_STOP=false; $('hist-go').disabled=true; $('hist-stop').style.display='inline-block'; $('hist-bar').style.display='block';
+  const label=$('hist-label').value;
+  const totalBytes=files.reduce((a,f)=>a+f.size,0); let done=0; const results=[];
+  try{
+    for(const f of files){
+      let pos=0, rows=0, bad=0, off=0, sus=0, first=null, last=null;
+      while(pos<f.size){
+        if(HIST_STOP) throw new Error('已停止');
+        const buf=new Uint8Array(await f.slice(pos, Math.min(pos+CHUNK, f.size)).arrayBuffer());
+        let cut=buf.length;
+        if(pos+buf.length<f.size){ cut=buf.lastIndexOf(10)+1; if(cut<=0) cut=buf.length; }   // 切在換行
+        const body=buf.subarray(0,cut);
+        let ok=false, err='';
+        for(let t=0;t<3&&!ok;t++){                                  // 每塊最多重試 3 次
+          try{
+            const r=await fetch('/api/hist/upload?label='+label,{method:'POST',headers:{'X-Token':TOKEN,'Content-Type':'text/plain'},body});
+            if(r.status===401) throw new Error('登入已過期，請重新登入');
+            const d=await r.json(); if(!d.ok) throw new Error(d.error||'失敗');
+            rows+=d.rows; bad+=d.bad; off+=d.off_session; sus+=d.suspicious;
+            if(d.first&&(!first||d.first<first))first=d.first; if(d.last&&(!last||d.last>last))last=d.last;
+            ok=true;
+          }catch(e){ err=e.message; if(/登入/.test(err)) throw e; await new Promise(r=>setTimeout(r,1500)); }
+        }
+        if(!ok) throw new Error(`${f.name} 在 ${(pos/1e6).toFixed(0)}MB 處上傳失敗：${err}`);
+        pos+=cut; done+=cut;
+        $('hist-fill').style.width=(done/totalBytes*100).toFixed(1)+'%';
+        $('hist-prog').textContent=`${f.name}：${(pos/1e6).toFixed(0)} / ${(f.size/1e6).toFixed(0)} MB，已寫入 ${rows.toLocaleString()} 根`;
+      }
+      results.push(`<b>${f.name}</b>：${rows.toLocaleString()} 根（${first||'—'} ～ ${last||'—'}）`+
+        (bad?`，無法解析 ${bad} 行`:'')+(off?`，時段外略過 ${off.toLocaleString()} 根`:'')+
+        (sus>rows*0.002?` <span class="st-bad">⚠️ 有 ${sus} 根落在 08:44/14:59，時間標記可能選錯</span>`:''));
+    }
+    $('hist-prog').innerHTML='<span class="saved">匯入完成</span><br>'+results.join('<br>');
+  }catch(e){
+    $('hist-prog').innerHTML=`<span class="st-bad">${e.message}</span>`+(results.length?'<br>'+results.join('<br>'):'');
+  }finally{
+    $('hist-go').disabled=false; $('hist-stop').style.display='none'; histSummary();
+  }
+}
 // ============ 回測 ============
 let BTinit=false;
 async function initBT(){
@@ -483,7 +555,7 @@ async function runBT(){
   const names=[...document.querySelectorAll('.bt-s:checked')].map(x=>x.value);
   if(!names.length){alert('請至少選一支策略');return;}
   $('bt-run').disabled=true; $('bt-msg').textContent='啟動中…';
-  const body={start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,contract:$('bt-contract').value,strategies:names,warmup_days:$('bt-warm').value};
+  const body={start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,contract:$('bt-contract').value,strategies:names,warmup_days:$('bt-warm').value,source:$('bt-src').value};
   const r=await fetch('/api/backtest/run',{method:'POST',headers:hdr(),body:JSON.stringify(body)});
   if(!r.ok){$('bt-msg').textContent='無法啟動（可能已在執行）';$('bt-run').disabled=false;return;}
   pollBT();
@@ -544,7 +616,7 @@ async function renderBT(){
   const names=Object.keys(r.per_strategy);
   $('bt-out').innerHTML=`
     <div class="card"><h3>組合績效</h3>
-      <div class="desc">${p.start} ~ ${p.end}　·　${M(p.bars)} 根 1 分 K　·　${p.days} 個交易日　·　${p.contract} 每點 ${p.bpv} 元　·　單邊成本 ${p.cost_pts} 點${p.warmup_days?`　·　暖機 ${p.warmup_days} 個交易日（自 ${p.warmup_from}，不計交易）`:''}</div>
+      <div class="desc">${p.start} ~ ${p.end}　·　${M(p.bars)} 根 1 分 K　·　${p.days} 個交易日　·　${p.source==='mc'?'MC 歷史':'永豐即時'}　·　${p.contract} 每點 ${p.bpv} 元　·　單邊成本 ${p.cost_pts} 點${p.warmup_days?`　·　暖機 ${p.warmup_days} 個交易日（自 ${p.warmup_from}，不計交易）`:''}</div>
       ${statBlock(c,p.bpv)}
       ${equitySVG(r.equity)}
       ${monthlyTable(c.monthly)}

@@ -18,6 +18,8 @@ from .state import STATE
 from .strategies import REGISTRY
 
 BPV = {"TXF": 200, "MXF": 50, "TMF": 10}
+import os as _os
+MAX_BARS = int(_os.getenv("BACKTEST_MAX_BARS", "600000"))    # 單次回測最多載入幾根 1 分 K；每 10 萬根約 60MB
 
 
 class Trade:
@@ -135,35 +137,93 @@ def _sample(curve, n):
     return out
 
 
+def _child(params, q):
+    """子程序入口：獨立的記憶體與 GIL，實盤程序不受回測計算影響；降低優先權讓出 CPU。"""
+    import os as __os
+    try:
+        __os.nice(10)
+    except Exception:
+        pass
+    try:
+        from .db import DB_ as _db
+        _db.conn = None                      # 父程序的資料庫連線不能跨 fork 共用
+        _db.lock = threading.RLock()
+        _db.connect()
+        from .portfolio import PORTFOLIO as _pf
+        bt = Backtester()
+        bt._q = q
+        q.put(("result", bt._backtest(params, _pf)))
+    except Exception as e:
+        q.put(("error", repr(e)))
+
+
 class Backtester:
     def __init__(self):
         self.lock = threading.Lock()
         self.running = False
-        self.progress = ""
+        self._progress = ""
+        self._q = None
         self.result = None
         self.error = None
+
+    @property
+    def progress(self):
+        return self._progress
+
+    @progress.setter
+    def progress(self, v):
+        self._progress = v
+        if self._q is not None:
+            try:
+                self._q.put(("progress", v))
+            except Exception:
+                pass
 
     def status(self):
         return {"running": self.running, "progress": self.progress,
                 "has_result": self.result is not None, "error": self.error}
 
     def start(self, params, portfolio):
-        if self.running:
-            return False
+        with self.lock:
+            if self.running:
+                return False
+            self.running = True              # 先標記執行中，避免狀態查詢搶在程序啟動前回「沒在跑」
+            self.error = None
+            self._progress = "啟動回測程序…"
         threading.Thread(target=self._run, args=(params, portfolio), daemon=True).start()
         return True
 
     # ------------------------------------------------------------
     def _run(self, params, portfolio):
-        self.running, self.error, self.progress = True, None, "載入資料…"
+        import multiprocessing as mp
+        import queue as _queue
+        self.running, self.error, self.progress = True, None, "啟動回測程序…"
         t0 = time.time()
         try:
-            self.result = self._backtest(params, portfolio)
-            self.progress = f"完成（{time.time() - t0:.1f} 秒）"
+            ctx = mp.get_context("fork")
+            q = ctx.Queue()
+            p = ctx.Process(target=_child, args=(params, q), daemon=True)
+            p.start()
+            while True:
+                try:
+                    kind, val = q.get(timeout=1)
+                except _queue.Empty:
+                    if not p.is_alive():
+                        raise RuntimeError(f"回測程序意外結束（代碼 {p.exitcode}），可能是記憶體不足，請縮短區間")
+                    continue
+                if kind == "progress":
+                    self._progress = val
+                elif kind == "result":
+                    self.result = val
+                    self.progress = f"完成（{time.time() - t0:.1f} 秒）"
+                    break
+                elif kind == "error":
+                    raise RuntimeError(val)
+            p.join(timeout=5)
         except Exception as e:
-            self.error = repr(e)
+            self.error = str(e)
             self.progress = "失敗"
-            STATE.log("ERROR", f"回測失敗：{e!r}")
+            STATE.log("ERROR", f"回測失敗：{e}")
         finally:
             self.running = False
 
@@ -177,9 +237,27 @@ class Backtester:
         warmup_days = int(params.get("warmup_days", 15))  # 暖機交易日：只跑指標不計交易
         overrides = params.get("inputs") or {}            # {策略名: {參數: 值}}
 
-        m1_all = DB_.load_bars(400000)
+        source = params.get("source", "live")          # live = 永豐即時累積；mc = MultiCharts 歷史（之後接永豐）
+        end_ts = (end + " 23:59") if end else "9999-12-31 23:59"
+        # 起始日往前多抓一段給暖機用（交易日 × 2 + 10 天的日曆日，足夠涵蓋假日）
+        if start:
+            from datetime import date as _d, timedelta as _td
+            load_from = (_d.fromisoformat(start) - _td(days=max(warmup_days, 0) * 2 + 10)).isoformat()
+        else:
+            load_from = "0000-01-01"
+        tables = ["hist_bars", "bars"] if source == "mc" else ["bars"]
+        total = sum(DB_.count_range(t, load_from, end_ts) for t in tables)
+        if total > MAX_BARS:
+            raise ValueError(f"區間內約 {total:,} 根 1 分 K，超過單次上限 {MAX_BARS:,}；請縮短日期區間（含夜盤約 2 年、純日盤約 8 年）")
+        self.progress = f"載入 {total:,} 根 1 分 K…"
+        if source == "mc":
+            m1_all = DB_.load_range("hist_bars", load_from, end_ts)
+            tail_from = (m1_all[-1]["ts"] + ":99") if m1_all else load_from      # MC 最後一根之後接永豐資料
+            m1_all += [b for b in DB_.load_range("bars", load_from, end_ts) if b["ts"] > tail_from[:16]]
+        else:
+            m1_all = DB_.load_range("bars", load_from, end_ts)
         if end:
-            m1_all = [b for b in m1_all if b["ts"] <= end + " 23:59"]
+            m1_all = [b for b in m1_all if b["ts"] <= end_ts]
         # 暖機：起始日往前多取 warmup_days 個交易日的資料，只餵指標、不計交易
         stats_from = None
         if start and warmup_days > 0:
@@ -339,7 +417,7 @@ class Backtester:
                            "inputs": s.p, **_stats(st, bpv, c2), "monthly": _monthly(st)}
 
         return {
-            "params": {"start": (stats_from + " 00:00") if stats_from else m1[0]["ts"],
+            "params": {"source": source, "start": (stats_from + " 00:00") if stats_from else m1[0]["ts"],
                        "end": m1[-1]["ts"], "cost_pts": cost,
                        "warmup_days": warm_used, "warmup_from": m1[0]["ts"][:10],
                        "contract": contract, "bpv": bpv, "bars": len(m1),
