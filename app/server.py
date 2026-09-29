@@ -213,18 +213,62 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", "0") or 0)
             if n > 8 * 1024 * 1024:
                 self._send(413, {"ok": False, "error": "單塊超過 8MB"}); return
-            text = self.rfile.read(n).decode("utf-8", errors="replace")
-            mode = q.get("label", ["end"])[0]
-            rows, st = parse_chunk(text, "start" if mode == "start" else "end")
-            DB_.upsert_hist(rows)
-            self._send(200, {"ok": True, **st}); return
+            raw = self.rfile.read(n)
+            mode = "start" if q.get("label", ["end"])[0] == "start" else "end"
+            from .histimport import iter_texts
+            tot = {"rows": 0, "bad": 0, "off_session": 0, "suspicious": 0, "first": None, "last": None}
+            for _, text in iter_texts(raw):
+                rows, st = parse_chunk(text, mode)
+                DB_.upsert_hist(rows)
+                for k in ("rows", "bad", "off_session", "suspicious"):
+                    tot[k] += st[k]
+                for k, cmp_ in (("first", min), ("last", max)):
+                    if st[k]:
+                        tot[k] = st[k] if tot[k] is None else cmp_(tot[k], st[k])
+            self._send(200, {"ok": True, **tot}); return
+        if u.path == "/api/hist/url":
+            from .db import DB_
+            from .histimport import fetch, iter_texts, parse_chunk
+            body = self._body()
+            label = "start" if body.get("label") == "start" else "end"
+            out = []
+            for url in [x.strip() for x in str(body.get("urls", "")).replace(",", "\n").split("\n") if x.strip()]:
+                try:
+                    data, name = fetch(url)
+                    for fn, text in iter_texts(data, name):
+                        tot = {"rows": 0, "bad": 0, "off_session": 0, "suspicious": 0, "first": None, "last": None}
+                        buf = []
+                        size = 0
+                        for line in text.splitlines(True):          # 分批解析，避免一次吃掉太多記憶體
+                            buf.append(line); size += len(line)
+                            if size >= 4 * 1024 * 1024:
+                                rows, st = parse_chunk("".join(buf), label); DB_.upsert_hist(rows)
+                                for k in ("rows", "bad", "off_session", "suspicious"):
+                                    tot[k] += st[k]
+                                for k, cmp_ in (("first", min), ("last", max)):
+                                    if st[k]:
+                                        tot[k] = st[k] if tot[k] is None else cmp_(tot[k], st[k])
+                                buf, size = [], 0
+                        if buf:
+                            rows, st = parse_chunk("".join(buf), label); DB_.upsert_hist(rows)
+                            for k in ("rows", "bad", "off_session", "suspicious"):
+                                tot[k] += st[k]
+                            for k, cmp_ in (("first", min), ("last", max)):
+                                if st[k]:
+                                    tot[k] = st[k] if tot[k] is None else cmp_(tot[k], st[k])
+                        out.append({"name": fn, "ok": True, **tot})
+                        STATE.log("INFO", f"歷史資料匯入 {fn}：{tot['rows']:,} 根（{tot['first']} ~ {tot['last']}）")
+                except Exception as e:
+                    out.append({"name": url[:60], "ok": False, "error": str(e)})
+                    STATE.log("WARN", f"歷史資料匯入失敗 {url[:60]}：{e}")
+            self._send(200, {"ok": True, "files": out}); return
         if u.path == "/api/hist/clear":
             from .db import DB_
             DB_.hist_clear()
             STATE.log("WARN", "已清除全部 MC 歷史資料")
             self._send(200, {"ok": True}); return
         if u.path == "/api/holidays":
-            from .state import parse_date_list, set_saved_holidays, HOLIDAYS, STATE
+            from .state import parse_date_list, set_saved_holidays, HOLIDAYS
             from .db import DB_
             dates, bad = parse_date_list(self._body().get("text", ""))
             if bad:

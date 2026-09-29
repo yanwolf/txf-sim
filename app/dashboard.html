@@ -200,11 +200,14 @@
       <h3>歷史資料匯入（MultiCharts 匯出）</h3>
       <div class="desc">格式：Symbol, Date, Time, Open, High, Low, Close, TotalVolume（1 分 K）。可一次選多個檔案，會切成小塊依序上傳，重複匯入同一段會覆蓋、不會重複。建議用電腦的瀏覽器上傳。</div>
       <div class="row">
-        <input type="file" id="hist-files" accept=".csv,.txt" multiple>
+        <input type="file" id="hist-files" accept=".csv,.txt,.zip" multiple>
       </div>
+      <div class="desc" style="margin:2px 0">或貼雲端連結（一行一個，支援 zip；Google Drive 需設為「知道連結的人都可以檢視」）</div>
+      <textarea id="hist-urls" rows="3" placeholder="https://drive.google.com/file/d/xxxxx/view?usp=sharing"></textarea>
       <div class="row">
         <label>時間代表 <select id="hist-label"><option value="end">K 棒結束時間（MC 預設）</option><option value="start">K 棒開始時間</option></select></label>
-        <button class="primary" id="hist-go" onclick="histUpload()">開始匯入</button>
+        <button class="primary" id="hist-go" onclick="histUpload()">上傳檔案</button>
+        <button id="hist-url-go" onclick="histFromUrl()">從連結匯入</button>
         <button id="hist-stop" onclick="HIST_STOP=true" style="display:none">停止</button>
       </div>
       <div id="hist-prog" style="font-size:13px"></div>
@@ -495,6 +498,24 @@ async function histSummary(){
   const tot=d.years.reduce((a,y)=>a+y.bars,0);
   $('hist-sum').innerHTML=`已匯入 ${tot.toLocaleString()} 根，${d.years[0].from} ～ ${d.years[d.years.length-1].to}<br>`+
     d.years.map(y=>`${y.year}：${y.bars.toLocaleString()}`).join('　');
+}
+async function histFromUrl(){
+  if(AUTH.protected&&!AUTH.authed){alert('請先到「設定」分頁登入');return;}
+  const urls=$('hist-urls').value.trim();
+  if(!urls){alert('請先貼上連結');return;}
+  $('hist-url-go').disabled=true; $('hist-go').disabled=true;
+  $('hist-prog').textContent='下載並匯入中…（大檔可能需要數分鐘，請勿關閉頁面）';
+  try{
+    const r=await fetch('/api/hist/url',{method:'POST',headers:hdr(),body:JSON.stringify({urls,label:$('hist-label').value})});
+    if(r.status===401) throw new Error('登入已過期，請重新登入');
+    const d=await r.json();
+    $('hist-prog').innerHTML=d.files.map(f=>f.ok
+      ? `<b>${f.name}</b>：${f.rows.toLocaleString()} 根（${f.first||'—'} ～ ${f.last||'—'}）`+
+        (f.bad?`，無法解析 ${f.bad} 行`:'')+(f.off_session?`，時段外略過 ${f.off_session.toLocaleString()} 根`:'')+
+        (f.suspicious>f.rows*0.002?` <span class="st-bad">⚠️ 時間標記可能選錯</span>`:'')
+      : `<span class="st-bad">${f.name}：${f.error}</span>`).join('<br>');
+  }catch(e){ $('hist-prog').innerHTML=`<span class="st-bad">${e.message}</span>`; }
+  finally{ $('hist-url-go').disabled=false; $('hist-go').disabled=false; histSummary(); }
 }
 async function histUpload(){
   if(AUTH.protected&&!AUTH.authed){alert('請先到「設定」分頁登入');return;}
