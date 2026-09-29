@@ -177,8 +177,14 @@ class State:
             return list(self.events)
 
     def recent_orders(self):
+        """給儀表板：去掉內部欄位（合約物件、後續單鏈）與無法序列化的值。"""
         with self.lock:
-            return list(self.orders)
+            out = []
+            for o in self.orders:
+                out.append({k: v for k, v in o.items()
+                            if not k.startswith("_") and k != "then"
+                            and isinstance(v, (str, int, float, bool, type(None)))})
+            return out
 
 
 def session_remaining_min(dt):

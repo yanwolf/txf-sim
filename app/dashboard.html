@@ -250,16 +250,16 @@ function toggleDbg(n){
   const b=document.getElementById('dbgb-'+n); if(b)b.textContent=DBGOPEN.has(n)?'▼ 計算過程':'▶ 計算過程';
 }
 const hdr=()=>({'Content-Type':'application/json','X-Token':TOKEN});
+let LAST_OK=0;
 
 async function tick(){
   try{
-    const [s,bars,sig,ev,orders]=await Promise.all([
-      fetch('/api/status').then(r=>r.json()),
-      fetch('/api/bars?n=40').then(r=>r.json()),
-      fetch('/api/signals').then(r=>r.json()),
-      fetch('/api/events').then(r=>r.json()),
-      fetch('/api/orders').then(r=>r.json()),
-    ]);
+    const get=u=>fetch(u).then(r=>{if(!r.ok)throw new Error(u+' '+r.status);return r.json();});
+    const rs=await Promise.allSettled([get('/api/status'),get('/api/bars?n=40'),get('/api/signals'),get('/api/events'),get('/api/orders')]);
+    if(rs[0].status!=='fulfilled') throw rs[0].reason;       // 主狀態拿不到才算連不上
+    const [s,bars,sig,ev,orders]=rs.map(x=>x.status==='fulfilled'?x.value:[]);
+    const failed=rs.map((x,i)=>x.status==='rejected'?['狀態','K線','訊號','事件','委託'][i]:null).filter(Boolean);
+    LAST_OK=Date.now();
     const c=cls(s.change);
     $('price').textContent=fmt(s.last_price); $('price').className='price num '+c;
     $('chg').textContent=s.change==null?'':sgn(s.change); $('chg').className='chg num '+c;
@@ -294,6 +294,8 @@ async function tick(){
     $('btn-adopt').disabled=!(s.reconcile_ok===false&&s.broker_position!=null);
 
     const b=$('banner'); const msgs=[]; let bad=false;
+    if(failed.length) msgs.push('部分資料暫時讀取失敗：'+failed.join('、'));
+    if(s.in_session&&s.tick_age_sec!=null&&s.tick_age_sec>180){msgs.push(`盤中已 ${Math.round(s.tick_age_sec/60)} 分鐘沒有行情`);bad=true;}
     if(s.kill){msgs.push('kill switch 開啟：'+(s.kill_reason||''));bad=true;}
     if(s.strategy_halted){msgs.push('策略已停止：'+s.strategy_halted);bad=true;}
     if(s.reconcile_ok===false&&s.mismatch_min>=3){msgs.push('內部部位與券商不一致已 '+s.mismatch_min+' 分鐘，確認後可按「以券商為準」');bad=true;}
@@ -329,7 +331,10 @@ async function tick(){
     $('kt').innerHTML=bars.length?bars.slice().reverse().map(k=>`<tr class="num"><td>${k.ts.slice(5)}</td><td>${k.open}</td><td>${k.high}</td><td>${k.low}</td><td class="${cls(k.close-k.open)}">${k.close}</td><td>${k.volume}</td><td>${k.src==='live'?'即時':'回補'}</td></tr>`).join(''):'<tr><td colspan="7" class="empty">尚無資料</td></tr>';
     $('signals').innerHTML=sig.length?sig.map(x=>{const cl=x.side.startsWith('平')?'flat':x.side.includes('多')?'up':'down';return `<div><span class="t">${x.t.slice(5)}</span><b class="${cl}">${x.side}</b> @ ${fmt(Math.round(x.price))}　${x.reason}</div>`;}).join(''):'<div class="empty">尚無訊號</div>';
     $('events').innerHTML=ev.map(e=>`<div class="${e.level}"><span class="t">${e.t.slice(5)}</span>${e.msg}</div>`).join('');
-  }catch(e){ $('sym').textContent='無法連到伺服器'; }
+  }catch(e){
+    const ago=LAST_OK?Math.round((Date.now()-LAST_OK)/1000):null;
+    $('sym').innerHTML=`<span class="st-bad">無法連到伺服器${ago!=null?`（畫面是 ${ago>=60?Math.round(ago/60)+' 分鐘':ago+' 秒'}前的資料）`:''}</span>`;
+  }
 }
 
 let MARGIN_T=0;

@@ -65,7 +65,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code, body, ctype="application/json; charset=utf-8"):
-        data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode()
+        data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False, default=str).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -74,6 +74,35 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        try:
+            self._do_GET()
+        except (BrokenPipeError, ConnectionResetError):
+            pass                                    # 手機切走頁面，正常
+        except Exception as e:
+            self._report(e)
+
+    def do_POST(self):
+        try:
+            self._do_POST()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            self._report(e)
+
+    _err_seen = {}
+
+    def _report(self, e):
+        key = f"{self.path.split('?')[0]}:{type(e).__name__}"
+        n = Handler._err_seen.get(key, 0) + 1
+        Handler._err_seen[key] = n
+        if n == 1 or n % 100 == 0:
+            STATE.log("ERROR", f"儀表板 API 錯誤 {self.path.split('?')[0]}（第 {n} 次）：{e!r}")
+        try:
+            self._send(500, {"error": repr(e)})
+        except Exception:
+            pass
+
+    def _do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path == "/":
@@ -152,7 +181,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
-    def do_POST(self):
+    def _do_POST(self):
         u = urlparse(self.path)
         if u.path == "/api/login":
             body = self._body()
