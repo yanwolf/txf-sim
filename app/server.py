@@ -127,8 +127,8 @@ class Handler(BaseHTTPRequestHandler):
             from .portfolio import PORTFOLIO
             self._send(200, {"protected": bool(PASSWORD), "authed": _authed(self), "strategies": PORTFOLIO.config_view()})
         elif u.path == "/api/backtest/status":
-            from .backtest import BACKTEST
-            self._send(200, BACKTEST.status())
+            from .backtest import BACKTEST, max_bars, _available_mb
+            self._send(200, {**BACKTEST.status(), "max_bars": max_bars(), "avail_mb": round(_available_mb())})
         elif u.path == "/api/backtest/result":
             from .backtest import BACKTEST
             r = BACKTEST.result
@@ -159,7 +159,12 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
         elif u.path == "/api/hist/summary":
             from .db import DB_
-            self._send(200, {"years": DB_.hist_summary()}); return
+            ys = DB_.hist_summary()
+            full = [y["bars"] for y in ys if y["bars"] > 0]
+            med = sorted(full)[len(full) // 2] if full else 0
+            for y in ys:                      # 明顯偏少（不到中位數 75%）就標記，方便找出缺漏的年份
+                y["thin"] = bool(med and y["bars"] < med * 0.75)
+            self._send(200, {"years": ys, "median": med}); return
         elif u.path == "/api/margin":
             if not _authed(self):
                 self._send(200, {"locked": True}); return

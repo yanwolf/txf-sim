@@ -19,7 +19,48 @@ from .strategies import REGISTRY
 
 BPV = {"TXF": 200, "MXF": 50, "TMF": 10}
 import os as _os
-MAX_BARS = int(_os.getenv("BACKTEST_MAX_BARS", "600000"))    # 單次回測最多載入幾根 1 分 K；每 10 萬根約 60MB
+MB_PER_1K_BARS = 0.70        # 實測：每 1,000 根 1 分 K 約 0.70MB，另加約 60MB 固定開銷
+FIXED_MB = 60
+MEM_FRACTION = float(_os.getenv("BACKTEST_MEM_FRACTION", "0.5"))   # 最多用掉目前可用記憶體的幾成
+
+
+def _available_mb():
+    """容器可用記憶體（MB）。優先讀 cgroup 限制，取不到再讀 /proc/meminfo。"""
+    try:                                     # cgroup v2
+        with open("/sys/fs/cgroup/memory.max") as f:
+            lim = f.read().strip()
+        if lim != "max":
+            with open("/sys/fs/cgroup/memory.current") as f:
+                cur = int(f.read().strip())
+            return max(0, (int(lim) - cur) / 1048576)
+    except Exception:
+        pass
+    try:                                     # cgroup v1
+        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
+            lim = int(f.read().strip())
+        with open("/sys/fs/cgroup/memory/memory.usage_in_bytes") as f:
+            cur = int(f.read().strip())
+        if lim < (1 << 60):
+            return max(0, (lim - cur) / 1048576)
+    except Exception:
+        pass
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1024
+    except Exception:
+        pass
+    return 1024.0
+
+
+def max_bars():
+    """單次回測可載入的 1 分 K 上限：依目前可用記憶體推算。BACKTEST_MAX_BARS 可強制指定。"""
+    env = _os.getenv("BACKTEST_MAX_BARS")
+    if env:
+        return int(env)
+    budget = _available_mb() * MEM_FRACTION - FIXED_MB
+    return max(100000, int(budget / MB_PER_1K_BARS * 1000))
 
 
 class Trade:
@@ -247,8 +288,13 @@ class Backtester:
             load_from = "0000-01-01"
         tables = ["hist_bars", "bars"] if source == "mc" else ["bars"]
         total = sum(DB_.count_range(t, load_from, end_ts) for t in tables)
-        if total > MAX_BARS:
-            raise ValueError(f"區間內約 {total:,} 根 1 分 K，超過單次上限 {MAX_BARS:,}；請縮短日期區間（含夜盤約 2 年、純日盤約 8 年）")
+        cap = max_bars()
+        if total > cap:
+            avail = _available_mb()
+            need = FIXED_MB + total / 1000 * MB_PER_1K_BARS
+            raise ValueError(f"區間內約 {total:,} 根 1 分 K，需要約 {need:,.0f}MB，超過目前可用上限 "
+                             f"{cap:,} 根（可用記憶體 {avail:,.0f}MB）。請縮短區間分段回測，"
+                             f"或在伺服器記憶體較空閒時再跑")
         self.progress = f"載入 {total:,} 根 1 分 K…"
         if source == "mc":
             m1_all = DB_.load_range("hist_bars", load_from, end_ts)

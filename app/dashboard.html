@@ -227,6 +227,7 @@
         <label>商品 <select id="bt-contract"><option value="TMF">微台（10元/點）</option><option value="MXF">小台（50元/點）</option><option value="TXF">大台（200元/點）</option></select></label>
         <label>單邊成本 <input type="number" id="bt-cost" value="2" step="0.5" style="width:70px"> 點</label>
       </div>
+      <div class="desc" id="bt-cap" style="margin:2px 0"></div>
       <div class="row" id="bt-picks"></div>
       <div class="row"><button class="primary" id="bt-run" onclick="runBT()">開始回測</button><span id="bt-msg" style="font-size:13px"></span></div>
     </div>
@@ -496,8 +497,10 @@ async function histSummary(){
   if(!d)return;
   if(!d.years.length){$('hist-sum').textContent='目前沒有 MC 歷史資料。';return;}
   const tot=d.years.reduce((a,y)=>a+y.bars,0);
+  const thin=d.years.filter(y=>y.thin);
   $('hist-sum').innerHTML=`已匯入 ${tot.toLocaleString()} 根，${d.years[0].from} ～ ${d.years[d.years.length-1].to}<br>`+
-    d.years.map(y=>`${y.year}：${y.bars.toLocaleString()}`).join('　');
+    d.years.map(y=>`<span class="${y.thin?'st-bad':''}">${y.year}：${y.bars.toLocaleString()}</span>`).join('　')+
+    (thin.length?`<br><span class="st-bad">⚠️ ${thin.map(y=>y.year).join('、')} 的根數明顯偏少（其他年份約 ${d.median.toLocaleString()}），可能匯出時有缺漏，該區間的回測結果會失真</span>`:'');
 }
 async function histFromUrl(){
   if(AUTH.protected&&!AUTH.authed){alert('請先到「設定」分頁登入');return;}
@@ -584,6 +587,7 @@ async function runBT(){
 async function pollBT(){
   const st=await fetch('/api/backtest/status',{headers:hdr()}).then(r=>r.json());
   $('bt-msg').textContent=st.error?('失敗：'+st.error):st.progress||'';
+  if(st.max_bars) $('bt-cap').textContent=`目前單次上限約 ${st.max_bars.toLocaleString()} 根 1 分 K（可用記憶體 ${st.avail_mb.toLocaleString()}MB）`;
   $('bt-msg').className=st.error?'st-bad':'';
   $('bt-run').disabled=st.running;
   if(st.running){setTimeout(pollBT,1500);return;}
