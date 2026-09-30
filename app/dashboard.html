@@ -615,7 +615,8 @@ async function initBT(){
     const d=await fetch('/api/config',{headers:hdr()}).then(r=>r.json());
     $('bt-picks').innerHTML='<span style="font-size:13px;color:var(--dim)">策略</span>'+d.strategies.map(s=>`<label><input type="checkbox" class="bt-s" value="${s.name}" ${s.enabled?'checked':''}> ${s.name}</label>`).join('');
     const t=new Date(), p=new Date(Date.now()-90*864e5);
-    $('bt-end').value=t.toISOString().slice(0,10); $('bt-start').value=p.toISOString().slice(0,10);
+    if(!$('bt-end').value)$('bt-end').value=t.toISOString().slice(0,10);
+    if(!$('bt-start').value)$('bt-start').value=p.toISOString().slice(0,10);
     BTinit=true;
   }
   pollBT();
@@ -735,6 +736,21 @@ async function renderBT(){
 
 refreshAuth(); setInterval(refreshAuth,30000);
 tick(); setInterval(tick,3000);
+
+// 回測條件記住上次的選擇（重新整理後不會跳回「永豐即時」、成本 2 點等預設值）
+(function(){
+  const ids=['bt-start','bt-end','bt-src','bt-warm','bt-contract','bt-cost'];
+  const KEY='bt-form-v1';
+  let saved={};
+  try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{};}catch(e){saved={};}
+  ids.forEach(id=>{
+    const el=document.getElementById(id); if(!el)return;
+    if(saved[id]!==undefined&&saved[id]!=='')el.value=saved[id];
+    el.addEventListener('change',()=>{
+      try{const cur=JSON.parse(localStorage.getItem(KEY)||'{}')||{};cur[id]=el.value;localStorage.setItem(KEY,JSON.stringify(cur));}catch(e){}
+    });
+  });
+})();
 </script>
 </body>
 </html>
