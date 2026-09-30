@@ -122,6 +122,27 @@
       "TNw": 330
     }
   },
+  "Orbit_gap": {
+    "enabled": true,
+    "mode": "paper",
+    "minutes": 30,
+    "lots": 1,
+    "inputs": {
+      "DAYMODE": 1,
+      "GAP_MODE": 1,
+      "GAP_MIN": 0,
+      "GAP_DAYS": 0,
+      "USE_AVL": 0,
+      "SIDE": 0,
+      "TOUCH": 20,
+      "BUF": 10,
+      "MAXLOSS": 150,
+      "TP_PCT": 1.2,
+      "EXIT_OPP": 1,
+      "ETD": 1,
+      "TNw": 330
+    }
+  },
   "demo_ma": {
     "enabled": false,
     "mode": "paper",
