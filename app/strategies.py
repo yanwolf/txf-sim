@@ -259,6 +259,7 @@ class GuYuan2025(Strategy):
                 "今日進場次數": self.entries_today, "結算日": self.checkday}
 
 
+# ⚠️ 指標參數（LADDER/OPENRULE/OPENVOL/AVL_RESET/MA1/MA2）已校準鎖定，見 ORBIT_HANDOFF.md；改進請加新參數，預設維持現行行為
 class OrbitCost30(Strategy):
     """軌道鞅 v1：30 分 K 多空成本（大量紅黑 K 階梯）+ 大小流氓濾網 + 公道伯方向。
 

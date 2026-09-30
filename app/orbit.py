@@ -1,3 +1,5 @@
+# ⚠️ 指標層已用 App 截圖逐根校準（LADDER=0, OPENRULE=1, OPENVOL=0, AVL_RESET=2, MA1=20, MA2=40）。
+# ⚠️ 修改前請先讀專案根目錄 ORBIT_HANDOFF.md；沒有新的 App 截圖證據不要改這個檔案的計算邏輯。
 """軌道鞅指標：多空成本（30 分 K 大量紅黑 K 階梯）、大小流氓、公道伯。
 
 策略（strategies.OrbitCost30）和圖表 API（/api/chart）共用這一份計算，
