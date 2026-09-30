@@ -107,6 +107,10 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path == "/":
             self._send(200, HTML.encode(), "text/html; charset=utf-8")
+        elif u.path == "/chart":
+            self._send(200, (Path(__file__).parent / "chart.html").read_bytes(), "text/html; charset=utf-8")
+        elif u.path == "/api/chart":
+            self._send(200, _chart_data(q)); return
         elif u.path == "/health":
             self._send(200 if STATE.login_ok else 503, {"ok": STATE.login_ok})
         elif u.path == "/api/status":
@@ -341,6 +345,51 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, {"error": "not found"}); return
         self._send(200, {"ok": True})
+
+
+def _chart_data(q):
+    """圖表頁資料：30 分 K + 軌道鞅指標（與 Orbit_cost30 策略同一份計算）+ 最近一次回測的交易點。"""
+    from datetime import date as _d, timedelta as _td
+    from . import tf, orbit
+    from .db import DB_
+    from .portfolio import PORTFOLIO
+    g = lambda k, d: q.get(k, [d])[0]
+    days = max(1, min(int(g("days", "10")), 90))
+    minutes = int(g("minutes", "30"))
+    source = g("source", "mc")
+    end = g("end", "") or _d.today().isoformat()
+    cfg = PORTFOLIO.effective_config().get("Orbit_cost30", {})
+    p = dict(cfg.get("inputs", {}))
+    for k in ("VOLN", "VOLX", "BODY", "DAYONLY", "MA1", "MA2"):
+        if g(k, "") != "":
+            p[k] = float(g(k, ""))
+    # 多抓 40 天讓公道伯、均量、均線暖機，畫圖時只回傳最後 days 天
+    load_from = (_d.fromisoformat(end) - _td(days=days + 40)).isoformat()
+    end_ts = end + " 23:59"
+    if source == "mc":
+        m1 = DB_.load_range("hist_bars", load_from, end_ts)
+        tail = m1[-1]["ts"] if m1 else ""
+        m1 += [b for b in DB_.load_range("bars", load_from, end_ts) if b["ts"] > tail]
+    else:
+        m1 = DB_.load_range("bars", load_from, end_ts)
+    bars = tf.build_bars(m1, minutes)
+    ind = orbit.series(bars, p)
+    show_from = (_d.fromisoformat(end) - _td(days=days)).isoformat()
+    dayonly = int(p.get("DAYONLY", 0))
+    out = [{"ts": b["ts"], "o": b["open"], "h": b["high"], "l": b["low"], "c": b["close"], "v": b["volume"],
+            "day": b["is_day"], **r}
+           for b, r in zip(bars, ind) if b["ts"] >= show_from and (b["is_day"] or not dayonly)]
+    trades = []
+    try:
+        from .backtest import BACKTEST
+        res = BACKTEST.result or {}
+        for t in res.get("trades", []):
+            if t.get("strategy") == "Orbit_cost30" and (t.get("exit_time") or "") >= show_from:
+                trades.append(t)
+    except Exception:
+        pass
+    return {"bars": out, "trades": trades, "params": p, "source": source, "minutes": minutes,
+            "m1_count": len(m1)}
 
 
 def serve():

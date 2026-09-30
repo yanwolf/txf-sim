@@ -94,6 +94,30 @@
       "TNw": 430
     }
   },
+  "Orbit_cost30": {
+    "enabled": true,
+    "mode": "paper",
+    "minutes": 30,
+    "lots": 1,
+    "inputs": {
+      "VOLN": 20,
+      "VOLX": 2.0,
+      "BODY": 0,
+      "DAYONLY": 0,
+      "MA1": 20,
+      "MA2": 40,
+      "USE_AVL": 1,
+      "SIDE": 0,
+      "ENTRY": 3,
+      "TOUCH": 20,
+      "BUF": 10,
+      "MAXLOSS": 150,
+      "TP_PCT": 1.2,
+      "EXIT_OPP": 1,
+      "ETD": 2,
+      "TNw": 330
+    }
+  },
   "demo_ma": {
     "enabled": false,
     "mode": "paper",

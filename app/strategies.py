@@ -259,6 +259,120 @@ class GuYuan2025(Strategy):
                 "今日進場次數": self.entries_today, "結算日": self.checkday}
 
 
+class OrbitCost30(Strategy):
+    """軌道鞅 v1：30 分 K 多空成本（大量紅黑 K 階梯）+ 大小流氓濾網 + 公道伯方向。
+
+    進場（ENTRY：1=回測有守、2=頂底被破、3=兩者都用）
+      多：大小流氓（MA1、MA2）之下不做多；價在公道伯之上（USE_AVL=1）
+          1) 回測多方階梯（低點碰到 階梯+TOUCH 內）且收盤守住 → 下一根市價進多
+          2) 收盤由下往上突破空方階梯（大黑頂被破）→ 下一根市價進多
+      空：完全鏡像
+    出場
+      停損：進場參考階梯 −BUF（多單），之後出現更高的多方階梯就往上移；另有 MAXLOSS 上限
+      停利：滿足點 TP_PCT %（0 = 不設）
+      EXIT_OPP=1：出現反方向大量 K 就市價出場
+      結算日收盤出場、週六 TNw 後出場
+    參數與 App 對照、校準方式見 orbit.py 註解。預設 paper 模式，不下單。
+    """
+    name = "Orbit_cost30"
+    desc = "軌道鞅 v1：30 分 K 大量紅黑 K 階梯（多空成本）+ 大小流氓濾網 + 公道伯，回測有守/頂底被破進場"
+    minutes = 30
+    doc = dict(VOLN="大量判定：同時段近幾根均量", VOLX="大量判定：均量倍數", BODY="大量 K 最小實體（點）",
+               DAYONLY="1=一般盤（只看日盤）、0=合併盤", MA1="小流氓均線期數", MA2="大流氓均線期數",
+               USE_AVL="1=用公道伯過濾方向", SIDE="0=多空、1=只做多、-1=只做空",
+               ENTRY="1=回測有守、2=頂底被破、3=兩者", TOUCH="回測判定：離階梯幾點內算碰到",
+               BUF="停損：階梯外再留幾點", MAXLOSS="單筆最大停損點數", TP_PCT="滿足點停利（%，0=不設）",
+               EXIT_OPP="1=反向大量 K 出場", ETD="每日最多進場次數", TNw="週六幾點後不留單（HHMM）")
+    inputs = dict(VOLN=20, VOLX=2.0, BODY=0, DAYONLY=0, MA1=20, MA2=40, USE_AVL=1, SIDE=0, ENTRY=3,
+                  TOUCH=20, BUF=10, MAXLOSS=150, TP_PCT=1.2, EXIT_OPP=1, ETD=2, TNw=330)
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        from .orbit import OrbitCalc
+        self.calc = OrbitCalc(self.p)
+        self.pos_stop = None
+        self.pending_ref = None
+
+    def on_bar(self):
+        p, c = self.p, self.calc
+        i = len(self.bars) - 1                    # 補上還沒餵過的 K（重啟回放時可能一次給很多根）
+        while i >= 0 and (c.last_ts is None or self.bars[i]["ts"] > c.last_ts):
+            i -= 1
+        for bb in self.bars[i + 1:]:
+            c.update(bb, self.trading_days)
+        if c.ma2 is None:
+            return
+        b = self.bars[self._i]
+        C, L, H = self.C(), self.L(), self.H()
+        side = int(p["SIDE"])
+        entry = int(p["ENTRY"])
+        day_ok = b["is_day"] or not int(p["DAYONLY"])
+        bull = C > c.ma1 and C > c.ma2
+        bear = C < c.ma1 and C < c.ma2
+        if int(p["USE_AVL"]) and c.avl:
+            bull = bull and C > c.avl
+            bear = bear and C < c.avl
+
+        if self.mp != self.mp_prev or self.mp == 0:
+            if self.mp == 0:
+                self.pos_stop = None
+
+        # ---- 進場
+        can = day_ok and self.entries_today < p["ETD"]
+        if can and self.mp <= 0 and side >= 0 and bull:
+            if entry in (1, 3) and c.long_ladder and L <= c.long_ladder + p["TOUCH"] and C > c.long_ladder:
+                self.pending_ref = c.long_ladder
+                self.buy_market("回測多方階梯有守")
+            elif entry in (2, 3) and c.short_ladder and self.C(1) <= c.short_ladder < C and c.big != -1:
+                self.pending_ref = c.short_ladder
+                self.buy_market("大黑頂被破")
+        if can and self.mp >= 0 and side <= 0 and bear:
+            if entry in (1, 3) and c.short_ladder and H >= c.short_ladder - p["TOUCH"] and C < c.short_ladder:
+                self.pending_ref = c.short_ladder
+                self.sellshort_market("回測空方階梯有守")
+            elif entry in (2, 3) and c.long_ladder and self.C(1) >= c.long_ladder > C and c.big != 1:
+                self.pending_ref = c.long_ladder
+                self.sellshort_market("大紅底被破")
+
+        # ---- 出場
+        if self.mp > 0 and self.entryprice is not None:
+            if self.pos_stop is None:
+                ref = self.pending_ref if self.pending_ref else self.entryprice - p["MAXLOSS"]
+                self.pos_stop = max(ref - p["BUF"], self.entryprice - p["MAXLOSS"])
+            if c.long_ladder and c.long_ladder < C and c.long_ladder - p["BUF"] > self.pos_stop:
+                self.pos_stop = c.long_ladder - p["BUF"]          # 停利點往上設
+            self.sell_stop(self.pos_stop, "階梯停損/停利")
+            if p["TP_PCT"]:
+                self.sell_limit(self.entryprice * (1 + p["TP_PCT"] / 100), "滿足點")
+            if int(p["EXIT_OPP"]) and c.big == -1:
+                self.sell_market("空方大量出現")
+        if self.mp < 0 and self.entryprice is not None:
+            if self.pos_stop is None:
+                ref = self.pending_ref if self.pending_ref else self.entryprice + p["MAXLOSS"]
+                self.pos_stop = min(ref + p["BUF"], self.entryprice + p["MAXLOSS"])
+            if c.short_ladder and c.short_ladder > C and c.short_ladder + p["BUF"] < self.pos_stop:
+                self.pos_stop = c.short_ladder + p["BUF"]         # 停利點往下設
+            self.buytocover_stop(self.pos_stop, "階梯停損/停利")
+            if p["TP_PCT"]:
+                self.buytocover_limit(self.entryprice * (1 - p["TP_PCT"] / 100), "滿足點")
+            if int(p["EXIT_OPP"]) and c.big == 1:
+                self.buytocover_market("多方大量出現")
+
+        if self.checkday:
+            self.setexitonclose()
+        if self.weekend_exit_due(p["TNw"]):
+            self.exit_market("週末出場")
+
+    def debug(self):
+        c = self.calc
+        r1 = lambda x: round(x, 1) if x is not None else None
+        return {"收盤": self.C(), "多方階梯": r1(c.long_ladder), "多方階梯時間": c.long_ts,
+                "空方階梯": r1(c.short_ladder), "空方階梯時間": c.short_ts,
+                f"MA{int(self.p['MA1'])}": r1(c.ma1), f"MA{int(self.p['MA2'])}": r1(c.ma2),
+                "公道伯 AVL": r1(c.avl), "本根大量": {1: "紅", -1: "黑", 0: "否"}[c.big],
+                "持倉停損價": r1(self.pos_stop), "今日進場次數": self.entries_today}
+
+
 class DemoMA(Strategy):
     """示範：1 分 K 均線交叉（之前那支），預設關閉。"""
     name = "demo_ma"
@@ -280,4 +394,5 @@ class DemoMA(Strategy):
             self.sellshort_market("MA 下穿")
 
 
-REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, ARCrossunder2025, GuYuan2024, GuYuan2025, DemoMA)}
+REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, ARCrossunder2025, GuYuan2024, GuYuan2025,
+                                  OrbitCost30, DemoMA)}

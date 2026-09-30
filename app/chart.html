@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>軌道鞅圖表</title>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  :root { --bg:#0b0f17; --panel:#121826; --fg:#d7dde8; --dim:#8a93a6; --gold:#d4a72c; --line:#232b3b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px -apple-system,"PingFang TC","Noto Sans TC",sans-serif;
+         padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0); }
+  header { display:flex; align-items:center; gap:10px; padding:10px 12px; border-bottom:1px solid var(--line); }
+  header a { color:var(--dim); text-decoration:none; font-size:20px; }
+  h1 { font-size:16px; margin:0; font-weight:600; }
+  .bar { display:flex; flex-wrap:wrap; gap:6px; padding:8px 12px; }
+  .bar select, .bar input, .bar button { background:var(--panel); color:var(--fg); border:1px solid var(--line);
+         border-radius:8px; padding:6px 8px; font-size:13px; }
+  .bar input { width:64px; }
+  .bar button { border-color:var(--gold); color:var(--gold); }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .seg button { border:0; border-radius:0; color:var(--dim); background:var(--panel); }
+  .seg button.on { color:var(--gold); background:#231d0b; }
+  #info { padding:4px 12px 8px; font-size:12.5px; line-height:1.6; color:var(--dim); min-height:44px; }
+  #info b { font-weight:600; }
+  #chart { width:100%; height:62vh; }
+  #vol { width:100%; height:18vh; }
+  .msg { padding:12px; color:var(--dim); }
+  .k { display:inline-block; margin-right:10px; }
+</style>
+</head>
+<body>
+<header><a href="/">‹</a><h1>軌道鞅：多空成本 30 分 K</h1></header>
+<div class="bar">
+  <span class="seg"><button id="bDay">一般盤</button><button id="bAll" class="on">合併盤</button></span>
+  <select id="days"><option>3</option><option>5</option><option selected>10</option><option>20</option><option>40</option></select>
+  <select id="source"><option value="mc">歷史+即時</option><option value="live">只看即時</option></select>
+  <input id="end" type="date">
+  <input id="volx" placeholder="VOLX" inputmode="decimal">
+  <input id="voln" placeholder="VOLN" inputmode="numeric">
+  <button id="go">更新</button>
+</div>
+<div id="info">載入中…</div>
+<div id="chart"></div>
+<div id="vol"></div>
+<script>
+const RED = '#e5484d', GREEN = '#2fb36b', GREY = '#9aa3b2';
+let dayonly = 0, chart, volChart, S = {}, data = null;
+const $ = id => document.getElementById(id);
+// K 棒 ts 為台北時間；當成 UTC 丟給圖表，畫面上顯示的就是台北時間
+const toT = ts => Date.UTC(+ts.slice(0,4), +ts.slice(5,7)-1, +ts.slice(8,10), +ts.slice(11,13), +ts.slice(14,16)) / 1000;
+const f1 = x => x == null ? '—' : Number(x).toFixed(1).replace(/\.0$/, '');
+
+function build() {
+  const opt = { layout:{ background:{color:'#0b0f17'}, textColor:'#8a93a6' },
+    grid:{ vertLines:{color:'#1a2130'}, horzLines:{color:'#1a2130'} },
+    timeScale:{ timeVisible:true, secondsVisible:false, borderColor:'#232b3b' },
+    rightPriceScale:{ borderColor:'#232b3b' }, crosshair:{ mode:0 } };
+  chart = LightweightCharts.createChart($('chart'), opt);
+  volChart = LightweightCharts.createChart($('vol'), opt);
+  S.k = chart.addCandlestickSeries({ upColor:RED, downColor:GREEN, borderUpColor:RED, borderDownColor:GREEN,
+                                     wickUpColor:RED, wickDownColor:GREEN });
+  const line = (color, w, style) => chart.addLineSeries({ color, lineWidth:w, lineStyle:style||0,
+                                     priceLineVisible:false, lastValueVisible:false, lineType:1 });
+  S.long = line(RED, 2);  S.short = line(GREY, 2);
+  S.ma1 = chart.addLineSeries({ color:'#3b82f6', lineWidth:1, priceLineVisible:false, lastValueVisible:false });
+  S.ma2 = chart.addLineSeries({ color:'#84cc16', lineWidth:1, priceLineVisible:false, lastValueVisible:false });
+  S.avl = chart.addLineSeries({ color:'#f59e0b', lineWidth:1, lineStyle:2, priceLineVisible:false, lastValueVisible:false });
+  S.v = volChart.addHistogramSeries({ priceFormat:{type:'volume'}, priceLineVisible:false, lastValueVisible:false });
+  // 兩張圖時間軸同步
+  let lock = false;
+  const sync = (a, b) => a.timeScale().subscribeVisibleLogicalRangeChange(r => {
+    if (lock || !r) return; lock = true; b.timeScale().setVisibleLogicalRange(r); lock = false; });
+  sync(chart, volChart); sync(volChart, chart);
+  chart.subscribeCrosshairMove(p => showInfo(p && p.time));
+  new ResizeObserver(() => { chart.applyOptions({width:$('chart').clientWidth, height:$('chart').clientHeight});
+    volChart.applyOptions({width:$('vol').clientWidth, height:$('vol').clientHeight}); }).observe(document.body);
+}
+
+function showInfo(t) {
+  if (!data || !data.bars.length) return;
+  const b = (t && data.byT[t]) || data.bars[data.bars.length - 1];
+  const p = data.params;
+  $('info').innerHTML =
+    `<span class="k">${b.ts}</span><span class="k">開 ${f1(b.o)} 高 ${f1(b.h)} 低 ${f1(b.l)} 收 ${f1(b.c)}</span><br>` +
+    `<span class="k" style="color:${RED}">多方階梯 <b>${f1(b.long)}</b></span>` +
+    `<span class="k" style="color:${GREY}">空方階梯 <b>${f1(b.short)}</b></span>` +
+    `<span class="k" style="color:#f59e0b">公道伯 <b>${f1(b.avl)}</b></span><br>` +
+    `<span class="k" style="color:#3b82f6">${p.MA1|0}MA ${f1(b.ma1)}</span>` +
+    `<span class="k" style="color:#84cc16">${p.MA2|0}MA ${f1(b.ma2)}</span>` +
+    `<span class="k">量 ${b.v}${b.big ? (b.big > 0 ? '（大量紅K）' : '（大量黑K）') : ''}</span>`;
+}
+
+async function load() {
+  $('info').textContent = '載入中…';
+  const qs = new URLSearchParams({ days:$('days').value, source:$('source').value, DAYONLY:dayonly });
+  if ($('end').value) qs.set('end', $('end').value);
+  if ($('volx').value) qs.set('VOLX', $('volx').value);
+  if ($('voln').value) qs.set('VOLN', $('voln').value);
+  let r;
+  try { r = await (await fetch('/api/chart?' + qs)).json(); }
+  catch (e) { $('info').textContent = '讀取失敗：' + e; return; }
+  if (!r.bars || !r.bars.length) { $('info').textContent = `這段期間沒有資料（1 分 K ${r.m1_count || 0} 根）`; return; }
+  data = r; data.byT = {};
+  const k = [], L = [], Sh = [], m1 = [], m2 = [], av = [], v = [];
+  for (const b of r.bars) {
+    const t = toT(b.ts); b.t = t; data.byT[t] = b;
+    k.push({ time:t, open:b.o, high:b.h, low:b.l, close:b.c });
+    if (b.long != null) L.push({ time:t, value:b.long });
+    if (b.short != null) Sh.push({ time:t, value:b.short });
+    if (b.ma1 != null) m1.push({ time:t, value:b.ma1 });
+    if (b.ma2 != null) m2.push({ time:t, value:b.ma2 });
+    if (b.avl != null) av.push({ time:t, value:b.avl });
+    v.push({ time:t, value:b.v, color: b.big > 0 ? RED : b.big < 0 ? GREEN : '#3a4254' });
+  }
+  S.k.setData(k); S.long.setData(L); S.short.setData(Sh);
+  S.ma1.setData(m1); S.ma2.setData(m2); S.avl.setData(av); S.v.setData(v);
+  // 回測交易點：對到所在的 30 分 K（K 棒時間 = 結束時間）
+  const at = ts => { for (const b of r.bars) if (b.ts > ts) return b.t; return null; };
+  const mk = [];
+  for (const t of r.trades) {
+    const a = at(t.entry_time), z = t.exit_time ? at(t.exit_time) : null, long = t.side === '多';
+    if (a) mk.push({ time:a, position: long ? 'belowBar' : 'aboveBar', color: long ? RED : GREEN,
+                     shape: long ? 'arrowUp' : 'arrowDown', text: `${t.side} ${f1(t.entry_price)}` });
+    if (z) mk.push({ time:z, position: long ? 'aboveBar' : 'belowBar', color:'#d4a72c', shape:'circle',
+                     text: `出 ${f1(t.net_pts)}點` });
+  }
+  mk.sort((x, y) => x.time - y.time);
+  S.k.setMarkers(mk);
+  chart.timeScale().fitContent();
+  showInfo(null);
+}
+
+$('bDay').onclick = () => { dayonly = 1; $('bDay').classList.add('on'); $('bAll').classList.remove('on'); load(); };
+$('bAll').onclick = () => { dayonly = 0; $('bAll').classList.add('on'); $('bDay').classList.remove('on'); load(); };
+$('go').onclick = load;
+if (window.LightweightCharts) { build(); load(); }
+else $('info').textContent = '圖表元件載入失敗（需要能連到 cdn.jsdelivr.net）';
+</script>
+</body>
+</html>
