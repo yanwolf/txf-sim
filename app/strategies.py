@@ -284,7 +284,7 @@ class OrbitCost30(Strategy):
                ENTRY="1=回測有守、2=頂底被破、3=兩者", TOUCH="回測判定：離階梯幾點內算碰到",
                BUF="停損：階梯外再留幾點", MAXLOSS="單筆最大停損點數", TP_PCT="滿足點停利（%，0=不設）",
                EXIT_OPP="1=反向大量 K 出場", ETD="每日最多進場次數", TNw="週六幾點後不留單（HHMM）")
-    inputs = dict(LADDER=0, AVL_RESET=2, OPENVOL=2000, OPENRULE=0, VOLN=20, VOLX=2.0, BODY=0, DAYONLY=0, MA1=20, MA2=40, USE_AVL=1, SIDE=0, ENTRY=3,
+    inputs = dict(LADDER=0, AVL_RESET=2, OPENVOL=0, OPENRULE=1, VOLN=20, VOLX=2.0, BODY=0, DAYONLY=0, MA1=20, MA2=40, USE_AVL=1, SIDE=0, ENTRY=3,
                   TOUCH=20, BUF=10, MAXLOSS=150, TP_PCT=1.2, EXIT_OPP=1, ETD=2, TNw=330)
 
     def __init__(self, cfg):
