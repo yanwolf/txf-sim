@@ -196,10 +196,22 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/margin":
             if not _authed(self):
                 self._send(200, {"locked": True}); return
-            from .broker import BROKER
+            from .broker import BROKER, MARGIN_CHECK
+            from .taifex_margin import MARGIN_TABLE
+            _S = STATE
             if q.get("refresh", ["0"])[0] == "1":
                 BROKER.refresh_margin()
-            self._send(200, {"locked": False, "margin": BROKER.margin}); return
+                MARGIN_TABLE.refresh()
+            code = _S.order_contract
+            per = MARGIN_TABLE.per_lot(code)
+            snap = MARGIN_TABLE.snapshot()
+            m = BROKER.margin
+            self._send(200, {"locked": False, "margin": m, "table": snap,
+                             "order_code": code, "per_lot": per,
+                             "per_lot_source": "manual" if snap["manual_per_lot"] else "taifex",
+                             "lots_affordable": int(m["available_margin"] // per) if (m and per) else None,
+                             "check": MARGIN_CHECK,
+                             "blocked": _S.margin_blocked}); return
         elif u.path == "/api/holidays":
             from .state import ENV_HOLIDAYS, SAVED_HOLIDAYS, HOLIDAYS
             f = lambda xs: sorted(x.isoformat() for x in xs)

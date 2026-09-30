@@ -74,6 +74,8 @@ DB 裡的設定優先於 `strategy_config.json`。設 `DASHBOARD_PASSWORD` 後�
 - 每分鐘跟券商對帳，不一致告警並以券商為準（`RECONCILE_ADOPT`）
 - 風控：kill switch、`DAILY_LOSS_LIMIT_PTS` 單日虧損上限（達到就平倉並鎖到隔天）、`MAX_POSITION`、非交易時段不送單、`FLAT_AT_DAY_CLOSE` 日盤收盤前平倉
 - 儀表板按鈕：Kill switch / 全部平倉 / 恢復 / 立即對帳
+- 保證金：盤中每 5 分鐘查帳戶保證金（`api.margin`）；另外每 `MARGIN_TABLE_REFRESH_MIN` 分鐘抓期交所 OpenAPI 的每口原始／維持保證金，存進 DB，數字變動就推播並記在儀表板「最近調整」。期交所 API 只給目前生效的數字，尚未生效的公告看不到
+- 下單前保證金檢查（`MARGIN_CHECK`）：開倉口數 × 每口原始保證金 ×（1 + `MARGIN_BUFFER_PCT`%）大於可用保證金（同張單先平掉的口數會算回來）就不送單並通知，不計入委託失敗；策略帳上仍視為進場，出場訊號時帳戶本來就沒部位，不會多送單。券商收得比期交所高時用 `MARGIN_PER_LOT` 指定
 
 **Telegram**：填 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`，推播訊號、成交、委託失敗、斷線重連、對帳不一致、kill。
 

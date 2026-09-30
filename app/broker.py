@@ -22,6 +22,7 @@ import shioaji as sj
 from .db import DB_
 from .notify import notify
 from .state import STATE, in_session, now, session_dead
+from .taifex_margin import MARGIN_TABLE
 
 MODE = os.getenv("MODE", "signal").lower()
 SIMULATION = os.getenv("SIMULATION", "true").lower() != "false"
@@ -35,6 +36,9 @@ MAX_ORDER_FAILURES = int(os.getenv("MAX_ORDER_FAILURES", "2"))
 FLAT_AT_DAY_CLOSE = os.getenv("FLAT_AT_DAY_CLOSE", "false").lower() == "true"
 RECONCILE_ADOPT = os.getenv("RECONCILE_ADOPT", "false").lower() == "true"
 MARGIN_ALERT_AVAILABLE = float(os.getenv("MARGIN_ALERT_AVAILABLE", "0"))   # 可用保證金低於此金額（元）就通知；0 = 不檢查
+# 下單前保證金檢查：block = 不夠就不送開倉單；warn = 照送但通知；off = 不檢查。模擬環境預設 warn
+MARGIN_CHECK = os.getenv("MARGIN_CHECK", "warn" if SIMULATION else "block").lower()
+MARGIN_BUFFER_PCT = float(os.getenv("MARGIN_BUFFER_PCT", "0"))   # 開倉要求多留幾 % 緩衝，例如 10
 SPLIT_FLIP = os.getenv("SPLIT_FLIP", "true").lower() == "true"   # 反手拆成「平倉」+「新倉」兩張單
 
 # 新舊版 shioaji 常數相容
@@ -290,6 +294,51 @@ class Broker:
             if self.margin is None or in_session(now()):
                 STATE.log("WARN", f"保證金查詢失敗：{e!r}")
 
+    def _margin_ok(self, delta, octype, contract, reason):
+        """開倉前檢查可用保證金夠不夠。只擋會增加部位的單；平倉永遠放行。
+        回 False = 不送這張單（視同券商退單，但不計入失敗次數）。"""
+        if MARGIN_CHECK == "off" or octype == "Cover" or delta == 0:
+            return True
+        with STATE.lock:
+            pos = STATE.position
+        new = pos + delta
+        if pos == 0 or (new > 0) != (pos > 0):
+            opening, closing = abs(new), abs(pos)
+        else:
+            opening, closing = max(0, abs(new) - abs(pos)), 0
+        if opening == 0:
+            return True
+        code = getattr(contract, "code", STATE.order_contract)
+        per = MARGIN_TABLE.per_lot(code)
+        if not per:
+            STATE.log("WARN", f"查不到 {code} 每口保證金（期交所表未取得、也沒設 MARGIN_PER_LOT），略過保證金檢查")
+            return True
+        # 剛有成交（例如反手先平倉）→ 快取的可用保證金已過時，先重查
+        if self.margin is None or self._last_margin < self._last_fill_ts or time.time() - self._last_margin > 300:
+            self.refresh_margin()
+        m = self.margin
+        if not m or (not m.get("equity") and not m.get("available_margin")):
+            STATE.log("WARN", "券商保證金資料不可用，略過保證金檢查")
+            return True
+        need = opening * per * (1 + MARGIN_BUFFER_PCT / 100)
+        have = m["available_margin"] + closing * per      # 同一張單先平掉的部位會釋放保證金
+        if have >= need:
+            if STATE.margin_blocked:
+                with STATE.lock:
+                    STATE.margin_blocked = None
+            return True
+        msg = (f"保證金不足：開 {opening} 口 {code} 需 {need:,.0f}（每口 {per:,.0f}），"
+               f"可用 {m['available_margin']:,.0f}" + (f"＋平倉釋放 {closing * per:,.0f}" if closing else ""))
+        if MARGIN_CHECK == "warn":
+            STATE.log("WARN", msg + "，照送（MARGIN_CHECK=warn）")
+            notify(f"⚠️ {msg}，照送單", key="margin_short", cooldown=600)
+            return True
+        STATE.log("ERROR", msg + f"，不送單（{reason}）")
+        notify(f"🛑 {msg}，這次開倉不送單（{reason}）", key="margin_short", cooldown=600)
+        with STATE.lock:
+            STATE.margin_blocked = {"t": _ts(), "msg": msg, "reason": reason}
+        return False
+
     def roll_to(self, new_contract):
         """把下單合約換到 new_contract；手上若有舊月部位，先平舊月、成交後開同向同量的新月。"""
         old = self.contract
@@ -356,6 +405,8 @@ class Broker:
         contract = contract or self.contract
         if self.api is None or contract is None or self.account is None or not self.ready:
             STATE.log("WARN", f"下單層尚未就緒，略過（{reason}）；就緒後會自動對齊")
+            return
+        if not self._margin_ok(delta, octype, contract, reason):
             return
         action = Action.Buy if delta > 0 else Action.Sell
         qty = abs(delta)
@@ -727,8 +778,6 @@ class Broker:
         if self._recon_fail:
             STATE.log("INFO", f"對帳恢復（先前連續失敗 {self._recon_fail} 次）")
             self._recon_fail = 0
-        self.margin = None              # 最近一次保證金查詢結果（dict）
-        self._last_margin = 0.0
 
     def adopt_broker(self):
         """手動或自動：內部帳改成券商的數字。"""

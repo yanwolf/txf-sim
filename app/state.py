@@ -36,6 +36,7 @@ class State:
         self.lock = threading.RLock()
         self.started_at = now().isoformat(timespec="seconds")
         self.mode = "signal"
+        self.margin_blocked = None     # 最近一次因保證金不足而沒送的開倉單
         self.simulation = True
 
         self.login_ok = False

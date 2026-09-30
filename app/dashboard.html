@@ -367,17 +367,39 @@ async function loadMargin(force){
   const d=await fetch('/api/margin'+(force?'?refresh=1':''),{headers:hdr()}).then(r=>r.json()).catch(()=>null);
   if(!d)return;
   if(d.locked){$('margin').innerHTML='<span style="font-weight:400;color:var(--dim)">登入後顯示</span>';return;}
-  const m=d.margin;
-  if(!m){$('margin').innerHTML='<span style="font-weight:400;color:var(--dim)">尚未查詢（盤中每 5 分鐘更新）</span>';return;}
-  const f=v=>Math.round(v).toLocaleString('zh-TW');
-  const warn=m.margin_call>0;
-  $('margin').innerHTML=`<div class="mg">
+  const m=d.margin, t=d.table||{}, cur=t.current;
+  const f=v=>v==null?'—':Math.round(v).toLocaleString('zh-TW');
+  const sub=(x)=>`<div style="font-weight:400;font-size:11px;color:var(--dim);margin-top:4px">${x}</div>`;
+  let h='';
+  if(m){
+    const warn=m.margin_call>0;
+    h+=`<div class="mg">
     <div><span>權益數</span>${f(m.equity)}</div>
     <div><span>可用保證金</span><b class="${warn?'st-bad':''}">${f(m.available_margin)}</b></div>
     <div><span>原始 / 維持</span>${f(m.initial_margin)} / ${f(m.maintenance_margin)}</div>
     <div><span>風險指標</span>${m.risk_indicator?m.risk_indicator.toFixed(0)+'%':'—'}</div>
     ${warn?`<div style="grid-column:1/-1" class="st-bad">追繳 ${f(m.margin_call)} 元</div>`:''}
-  </div><div style="font-weight:400;font-size:11px;color:var(--dim);margin-top:4px">${m.t} 更新 · <a href="#" onclick="loadMargin(true);return false" style="color:var(--blue)">立即更新</a></div>`;
+    </div>`;
+  }else{
+    h+='<span style="font-weight:400;color:var(--dim)">帳戶保證金尚未查詢（盤中每 5 分鐘更新）</span>';
+  }
+  // 期交所每口保證金
+  const code=(d.order_code||'').slice(0,3), p=cur&&cur.products?cur.products[code]:null;
+  const lots=d.lots_affordable;
+  h+=`<div class="mg" style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)">
+    <div><span>${p?p.label:'下單商品'}每口 原始 / 維持${d.per_lot_source==='manual'?'（手動設定）':''}</span>${d.per_lot?f(d.per_lot):'—'} / ${p?f(p.maintenance):'—'}</div>
+    <div><span>可用保證金可開</span><b class="${lots===0?'st-warn':''}">${lots==null?'—':lots+' 口'}</b></div>
+    ${cur?`<div style="grid-column:1/-1;font-weight:400;font-size:12px;color:var(--dim)">期交所：${Object.values(cur.products).map(x=>`${x.label} ${f(x.initial)}`).join('　')}（資料日 ${cur.date||'—'}）</div>`:''}
+    ${t.error?`<div style="grid-column:1/-1;font-weight:400;font-size:12px" class="st-warn">期交所表抓取失敗，沿用上次資料：${t.error}</div>`:''}
+    ${d.blocked?`<div style="grid-column:1/-1;font-weight:400;font-size:12px" class="st-bad">${d.blocked.t} 未送開倉：${d.blocked.msg}</div>`:''}
+  </div>`;
+  const hist=(t.history||[]).slice(0,5);
+  if(hist.length){
+    h+=`<div style="margin-top:8px;font-weight:400;font-size:12px;color:var(--dim)">最近調整<br>`+
+      hist.map(x=>x.changes.map(c=>`${x.date||x.t}　${c.label} ${f(c.old_initial)} → <span class="st-gold">${f(c.new_initial)}</span>`).join('<br>')).join('<br>')+'</div>';
+  }
+  h+=sub(`${m?m.t+' 更新　':''}下單前檢查：${{block:'不夠就不開倉',warn:'只通知',off:'關閉'}[d.check]||d.check}　<a href="#" onclick="loadMargin(true);return false" style="color:var(--blue)">立即更新</a>`);
+  $('margin').innerHTML=h;
 }
 async function post(path,confirmMsg,body){
   if(AUTH.protected&&!AUTH.authed){
