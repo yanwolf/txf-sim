@@ -645,15 +645,15 @@ function chgText(c){
   return ks.length?`<span class="st-gold">${ks.map(k=>k+'='+c[k]).join('、')}</span>`:'<span style="color:var(--dim)">預設</span>';
 }
 function runTag(p,x){
-  return `<div class="acc" style="padding:8px 12px;margin:0 0 10px"><b>${x?x.name:''}${x&&x.version?' '+x.version:''}</b>　${p.note?'<span class="st-gold">'+p.note+'</span>　':''}參數：${x?chgText(x.changed):''}<div class="desc" style="margin:4px 0 0">${p.run_at||''} 執行　·　${srcName(p.source)}　·　${(p.start||'').slice(0,10)} ~ ${(p.end||'').slice(0,10)}　·　單邊成本 ${p.cost_pts} 點</div></div>`;
+  return `<div class="acc" style="padding:8px 12px;margin:0 0 10px"><b>${x?x.name:''}${x&&x.version?' '+x.version:''}</b>　${p.note?'<span class="st-gold">'+p.note+'</span>　':''}參數：${x?chgText(x.changed):''}<div class="desc" style="margin:4px 0 0">${p.run_at||''} 執行　·　${srcName(p.source)}　·　${(p.start||'').slice(0,10)} ~ ${(p.end||'').slice(0,10)}　·　單邊成本 ${p.cost_pts} 點</div>${(p.gaps&&p.gaps.length)?`<div class="st-bad" style="font-size:12px;margin-top:4px">⚠️ 區間內有資料缺口：${p.gaps.join('、')}，該段沒有交易，結果會失真</div>`:''}</div>`;
 }
 function srcName(s){return s==='mc'?'MC 歷史':s==='live'?'<span class="st-gold">永豐即時</span>':(s||'—');}
 async function renderHist(){
   const r=await fetch('/api/backtest/history',{headers:hdr()}).then(x=>x.json()).catch(()=>({rows:[]}));
   const rows=r.rows||[];
   if(!rows.length){$('bt-hist').innerHTML='<div class="empty">尚無紀錄</div>';return;}
-  $('bt-hist').innerHTML=`<div class="scroll"><table><thead><tr><th>時間</th><th>策略</th><th>備註</th><th>參數</th><th>資料</th><th>區間</th><th>成本</th><th>筆數</th><th>淨點數</th><th>勝率</th><th>PF</th><th>回撤</th><th>多單</th><th>空單</th></tr></thead><tbody>
-    ${rows.map(h=>`<tr class="num"><td>${h.run_at||''}</td><td style="text-align:left">${h.strategy}${h.version?' '+h.version:''}</td><td style="text-align:left">${h.note||''}</td><td style="text-align:left">${chgText(h.changed)}</td><td>${srcName(h.source)}</td><td>${(h.start||'').slice(2)}~${(h.end||'').slice(2)}</td><td>${h.cost_pts}</td><td>${h.trades}</td><td class="${cls(h.net_pts)}">${M(h.net_pts,1)}</td><td>${h.win_rate??'—'}%</td><td>${h.profit_factor??'—'}</td><td class="down">${M(h.max_dd_pts,1)}</td><td class="${cls(h.long[1])}">${h.long[0]??0}筆 ${M(h.long[1],1)}</td><td class="${cls(h.short[1])}">${h.short[0]??0}筆 ${M(h.short[1],1)}</td></tr>`).join('')}</tbody></table></div>`;
+  $('bt-hist').innerHTML=`<div class="scroll"><table><thead><tr><th>時間</th><th>策略</th><th>備註</th><th>參數</th><th>資料</th><th>缺口</th><th>區間</th><th>成本</th><th>筆數</th><th>淨點數</th><th>勝率</th><th>PF</th><th>回撤</th><th>多單</th><th>空單</th></tr></thead><tbody>
+    ${rows.map(h=>`<tr class="num"><td>${h.run_at||''}</td><td style="text-align:left">${h.strategy}${h.version?' '+h.version:''}</td><td style="text-align:left">${h.note||''}</td><td style="text-align:left">${chgText(h.changed)}</td><td>${srcName(h.source)}</td><td class="${h.gaps?'st-bad':''}">${h.gaps?h.gaps+' 個月':'—'}</td><td>${(h.start||'').slice(2)}~${(h.end||'').slice(2)}</td><td>${h.cost_pts}</td><td>${h.trades}</td><td class="${cls(h.net_pts)}">${M(h.net_pts,1)}</td><td>${h.win_rate??'—'}%</td><td>${h.profit_factor??'—'}</td><td class="down">${M(h.max_dd_pts,1)}</td><td class="${cls(h.long[1])}">${h.long[0]??0}筆 ${M(h.long[1],1)}</td><td class="${cls(h.short[1])}">${h.short[0]??0}筆 ${M(h.short[1],1)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 async function clearHist(){
   if(!confirm('確定清除全部回測紀錄？'))return;

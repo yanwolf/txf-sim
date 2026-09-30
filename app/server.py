@@ -192,6 +192,28 @@ class Handler(BaseHTTPRequestHandler):
                     notes.append(f"夜盤只有 {m['night_days']} 天")
                 m["notes"] = notes
             self._send(200, {"year": y, "months": ms, "day_median": md, "night_median": mn}); return
+        elif u.path == "/api/hist/days":
+            # 對照 MC 日 K 用：本系統由 1 分 K 合成的「日 K」（CloseD 用的那份），含夜盤歸屬
+            from .db import DB_
+            from . import tf
+            from datetime import date as _d, timedelta as _td
+            f0 = q.get("from", [""])[0][:10]
+            t0 = q.get("to", [""])[0][:10]
+            try:
+                fd, td_ = _d.fromisoformat(f0), _d.fromisoformat(t0)
+            except ValueError:
+                self._send(400, {"error": "用法：/api/hist/days?from=2025-03-24&to=2025-04-09"}); return
+            if (td_ - fd).days > 62:
+                self._send(400, {"error": "區間最多 62 天"}); return
+            m1 = DB_.load_range("hist_bars", (fd - _td(days=3)).isoformat(), td_.isoformat() + " 23:59")
+            sess = tf.build_sessions(m1)
+            days = tf.build_days(sess, m1)
+            out = [{"date": d["date"].isoformat(), "weekday": "一二三四五六日"[d["date"].weekday()],
+                    "open": d["open"], "high": d["high"], "low": d["low"], "close": d["close"]}
+                   for d in days if fd <= d["date"] <= td_]
+            ses = [{"session": s.get("session"), "is_day": s.get("is_day"), "date": s["date"].isoformat(),
+                    "end": s.get("ts"), "close": s["close"]} for s in sess if fd - _td(days=1) <= s["date"] <= td_]
+            self._send(200, {"days": out, "sessions": ses}); return
         elif u.path == "/api/hist/summary":
             from .db import DB_
             ys = DB_.hist_summary()

@@ -235,6 +235,7 @@ def _history_rows(r):
             "profit_factor": x.get("profit_factor"), "max_dd_pts": x.get("max_dd_pts"),
             "expectancy": x.get("expectancy"),
             "long": [x.get("long_trades"), x.get("long_pts")], "short": [x.get("short_trades"), x.get("short_pts")],
+            "gaps": len(p.get("gaps") or []),
         })
     return rows
 
@@ -558,8 +559,24 @@ class Backtester:
                            "inputs": s.p, **_stats(st, bpv, c2), "monthly": _monthly(st),
                            "groups": _groups(st)}
 
+        # 資料缺口：區間內（頭尾月份除外）日盤交易日不到 12 天的月份
+        from collections import Counter as _C
+        s0 = stats_from or m1[0]["ts"][:10]
+        mdays = _C(d.isoformat()[:7] for d in trading_days if d.isoformat() >= s0)
+        gaps = []
+        y, mth = int(s0[:4]), int(s0[5:7])
+        last = m1[-1]["ts"][:7]
+        first = s0[:7]
+        while f"{y}-{mth:02d}" <= last:
+            key = f"{y}-{mth:02d}"
+            if key not in (first, last) and mdays.get(key, 0) < 12:
+                gaps.append(f"{key}（{mdays.get(key, 0)} 天）")
+            mth += 1
+            if mth > 12:
+                y, mth = y + 1, 1
+
         return {
-            "params": {"note": (params.get("note") or "").strip()[:60],
+            "params": {"note": (params.get("note") or "").strip()[:60], "gaps": gaps,
                        "run_at": STATE_now_str(), "source": source, "start": (stats_from + " 00:00") if stats_from else m1[0]["ts"],
                        "end": m1[-1]["ts"], "cost_pts": cost,
                        "warmup_days": warm_used, "warmup_from": m1[0]["ts"][:10],
