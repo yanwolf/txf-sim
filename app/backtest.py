@@ -24,24 +24,42 @@ FIXED_MB = 60
 MEM_FRACTION = float(_os.getenv("BACKTEST_MEM_FRACTION", "0.5"))   # 最多用掉目前可用記憶體的幾成
 
 
+def _reclaimable_mb(stat_path, keys):
+    """cgroup 的 memory.current／usage 含檔案快取（讀 SQLite 歷史資料留下的 page cache），
+    這部分記憶體不夠時核心會自動回收，不該算成「已用」。否則跑完一次長區間回測，
+    快取留在計數裡，下一次就被誤判記憶體不足（2026-09-30 實際發生：4,000MB → 3,112MB）。"""
+    try:
+        total = 0
+        with open(stat_path) as f:
+            for line in f:
+                k, _, v = line.partition(" ")
+                if k in keys:
+                    total += int(v)
+        return total / 1048576
+    except Exception:
+        return 0.0
+
+
 def _available_mb():
-    """容器可用記憶體（MB）。優先讀 cgroup 限制，取不到再讀 /proc/meminfo。"""
+    """容器可用記憶體（MB）。優先讀 cgroup 限制，取不到再讀 /proc/meminfo。檔案快取視為可用。"""
     try:                                     # cgroup v2
         with open("/sys/fs/cgroup/memory.max") as f:
             lim = f.read().strip()
         if lim != "max":
             with open("/sys/fs/cgroup/memory.current") as f:
-                cur = int(f.read().strip())
-            return max(0, (int(lim) - cur) / 1048576)
+                cur = int(f.read().strip()) / 1048576
+            cur -= _reclaimable_mb("/sys/fs/cgroup/memory.stat", ("inactive_file", "active_file"))
+            return max(0, int(lim) / 1048576 - max(cur, 0))
     except Exception:
         pass
     try:                                     # cgroup v1
         with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
             lim = int(f.read().strip())
         with open("/sys/fs/cgroup/memory/memory.usage_in_bytes") as f:
-            cur = int(f.read().strip())
+            cur = int(f.read().strip()) / 1048576
         if lim < (1 << 60):
-            return max(0, (lim - cur) / 1048576)
+            cur -= _reclaimable_mb("/sys/fs/cgroup/memory/memory.stat", ("total_inactive_file", "total_active_file"))
+            return max(0, lim / 1048576 - max(cur, 0))
     except Exception:
         pass
     try:
