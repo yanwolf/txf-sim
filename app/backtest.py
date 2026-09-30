@@ -351,7 +351,7 @@ class Backtester:
         for s in strats:
             by_tf.setdefault(s.minutes, []).append(s)
 
-        self.progress = f"重播 {len(m1)} 根 1 分 K…"
+        self.progress = f"整理 {len(m1):,} 根 1 分 K 的時段與 K 棒…"
         sessions = tf.build_sessions(m1)
         days = tf.build_days(sessions, m1)
         weeks = tf.build_weeks(days)
@@ -384,8 +384,8 @@ class Backtester:
                 open_trade[s.name] = Trade(s.name, 1 if action == "buy" else -1, ts, price, label)
 
         for i, b in enumerate(m1):
-            if i % 20000 == 0:
-                self.progress = f"重播 {i}/{len(m1)}…"
+            if i % 5000 == 0:
+                self.progress = f"重播 {i:,}/{len(m1):,}（{i * 100 // max(len(m1), 1)}%）…"
             ts = b["ts"]
             bar_dt = tf.parse_ts(ts)
             m1_end = bar_dt + timedelta(minutes=1)

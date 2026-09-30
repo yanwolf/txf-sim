@@ -17,7 +17,11 @@ NIGHT_START, NIGHT_END = 15 * 60, 5 * 60
 
 
 def parse_ts(ts):
-    return datetime.strptime(ts, "%Y-%m-%d %H:%M")
+    """'YYYY-MM-DD HH:MM' → datetime。格式固定，直接切字串，比 strptime 快約 10 倍（回測要呼叫數十萬次）。"""
+    try:
+        return datetime(int(ts[0:4]), int(ts[5:7]), int(ts[8:10]), int(ts[11:13]), int(ts[14:16]))
+    except (ValueError, IndexError):
+        return datetime.strptime(ts, "%Y-%m-%d %H:%M")
 
 
 def session_of(dt):
