@@ -108,7 +108,8 @@ app/notify.py      Telegram 推播
 ```
 
 ## 軌道鞅 v1（Orbit_cost30，paper 實驗）
-- `app/orbit.py`：多空成本（30 分 K 大量紅黑 K 階梯）、大小流氓（20MA/40MA）、公道伯（當月合約 VWAP）計算，策略與圖表共用
+- `app/orbit.py`：多空成本（LADDER=0 開盤法：時段首根 K 對前一時段收盤，階梯 = 前一時段收盤；LADDER=1 量倍數法）、大小流氓（20MA/40MA）、公道伯（VWAP，AVL_RESET 0=結算日、1=每月）計算，策略與圖表共用
 - `app/strategies.py` 的 `OrbitCost30`：回測有守 / 頂底被破進場，階梯停損並隨新階梯移動，滿足點 TP_PCT% 停利
 - `strategy_config.json` 預設 `mode: paper`，不計入淨部位、不下單
 - 圖表頁 `/chart`（儀表板「圖表」分頁）：K 線 + 階梯 + 均線 + 公道伯 + 大量 K 標色 + 最近一次回測的進出場點；可切一般盤/合併盤、臨時調 VOLX/VOLN 校準
+- 圖表頁下方「階梯變動」清單：每次階梯更新的時間、方向、價位，用來和 App 的紅/綠量柱逐根對照

@@ -358,9 +358,11 @@ def _chart_data(q):
     minutes = int(g("minutes", "30"))
     source = g("source", "mc")
     end = g("end", "") or _d.today().isoformat()
+    from .strategies import OrbitCost30
     cfg = PORTFOLIO.effective_config().get("Orbit_cost30", {})
-    p = dict(cfg.get("inputs", {}))
-    for k in ("VOLN", "VOLX", "BODY", "DAYONLY", "MA1", "MA2"):
+    p = dict(OrbitCost30.inputs)
+    p.update(cfg.get("inputs", {}))
+    for k in ("LADDER", "AVL_RESET", "VOLN", "VOLX", "BODY", "DAYONLY", "MA1", "MA2"):
         if g(k, "") != "":
             p[k] = float(g(k, ""))
     # 多抓 40 天讓公道伯、均量、均線暖機，畫圖時只回傳最後 days 天
@@ -388,7 +390,10 @@ def _chart_data(q):
                 trades.append(t)
     except Exception:
         pass
-    return {"bars": out, "trades": trades, "params": p, "source": source, "minutes": minutes,
+    changes = [{"ts": b["ts"], "side": "多方" if b["big"] > 0 else "空方",
+                "ladder": b["long"] if b["big"] > 0 else b["short"], "close": b["c"], "v": b["v"]}
+               for b in out if b["big"]]
+    return {"bars": out, "trades": trades, "params": p, "source": source, "minutes": minutes, "changes": changes,
             "m1_count": len(m1)}
 
 

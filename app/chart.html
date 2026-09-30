@@ -27,6 +27,13 @@
   #vol { width:100%; height:18vh; }
   .msg { padding:12px; color:var(--dim); }
   .k { display:inline-block; margin-right:10px; }
+  #chg { padding:8px 12px 24px; }
+  #chg h2 { font-size:14px; margin:6px 0 8px; color:var(--fg); }
+  #chg .scroll { overflow-x:auto; }
+  #chg table { border-collapse:collapse; width:100%; font-size:12.5px; font-variant-numeric:tabular-nums; }
+  #chg th, #chg td { padding:5px 6px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
+  #chg th:first-child, #chg td:first-child { text-align:left; }
+  #chg th { color:var(--dim); font-weight:500; }
 </style>
 </head>
 <body>
@@ -36,6 +43,8 @@
   <select id="days"><option>3</option><option>5</option><option selected>10</option><option>20</option><option>40</option></select>
   <select id="source"><option value="mc">歷史+即時</option><option value="live">只看即時</option></select>
   <input id="end" type="date">
+  <select id="ladder"><option value="0">階梯：開盤法</option><option value="1">階梯：量倍數</option></select>
+  <select id="avlr"><option value="0">公道伯：結算日起</option><option value="1">公道伯：每月 1 日起</option></select>
   <input id="volx" placeholder="VOLX" inputmode="decimal">
   <input id="voln" placeholder="VOLN" inputmode="numeric">
   <button id="go">更新</button>
@@ -43,6 +52,7 @@
 <div id="info">載入中…</div>
 <div id="chart"></div>
 <div id="vol"></div>
+<div id="chg"></div>
 <script>
 const RED = '#e5484d', GREEN = '#2fb36b', GREY = '#9aa3b2';
 let dayonly = 0, chart, volChart, S = {}, data = null;
@@ -93,7 +103,8 @@ function showInfo(t) {
 
 async function load() {
   $('info').textContent = '載入中…';
-  const qs = new URLSearchParams({ days:$('days').value, source:$('source').value, DAYONLY:dayonly });
+  const qs = new URLSearchParams({ days:$('days').value, source:$('source').value, DAYONLY:dayonly,
+                                   LADDER:$('ladder').value, AVL_RESET:$('avlr').value });
   if ($('end').value) qs.set('end', $('end').value);
   if ($('volx').value) qs.set('VOLX', $('volx').value);
   if ($('voln').value) qs.set('VOLN', $('voln').value);
@@ -129,6 +140,12 @@ async function load() {
   S.k.setMarkers(mk);
   chart.timeScale().fitContent();
   showInfo(null);
+  const rows = (r.changes || []).slice().reverse().map(c =>
+    `<tr><td>${c.ts}</td><td style="color:${c.side === '多方' ? RED : GREEN}">${c.side}階梯</td>` +
+    `<td>${f1(c.ladder)}</td><td>${f1(c.close)}</td><td>${c.v}</td></tr>`).join('');
+  $('chg').innerHTML = `<h2>階梯變動（新到舊，對照 App 標色量柱）</h2>` + (rows
+    ? `<div class="scroll"><table><tr><th>K 棒（結束時間）</th><th>變動</th><th>階梯價</th><th>收盤</th><th>量</th></tr>${rows}</table></div>`
+    : '<div class="msg">這段期間沒有階梯變動</div>');
 }
 
 $('bDay').onclick = () => { dayonly = 1; $('bDay').classList.add('on'); $('bAll').classList.remove('on'); load(); };
