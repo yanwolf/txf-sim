@@ -145,6 +145,9 @@ class Handler(BaseHTTPRequestHandler):
             light["trade_count"] = len(r["trades"])
             light["equity"] = r["equity"][-400:] if len(r["equity"]) > 400 else r["equity"]
             self._send(200, light)
+        elif u.path == "/api/backtest/history":
+            from .backtest import history
+            self._send(200, {"rows": history()})
         elif u.path == "/api/backtest/csv":
             from .backtest import BACKTEST
             r = BACKTEST.result
@@ -326,6 +329,10 @@ class Handler(BaseHTTPRequestHandler):
             DB_.set_kv("market_holidays", sorted(x.isoformat() for x in dates))
             STATE.log("INFO", f"休市日已更新（儀表板）：共 {len(HOLIDAYS)} 天")
             self._send(200, {"ok": True, "effective": sorted(x.isoformat() for x in HOLIDAYS)}); return
+        if u.path == "/api/backtest/history/clear":
+            from .backtest import history_clear
+            history_clear()
+            self._send(200, {"ok": True}); return
         if u.path == "/api/backtest/run":
             from .backtest import BACKTEST
             from .portfolio import PORTFOLIO

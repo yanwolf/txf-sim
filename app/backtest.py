@@ -149,6 +149,29 @@ def _stats(trades, bpv, equity_curve, mdd_override=None):
     }
 
 
+def _groups(trades):
+    """依進場原因、出場原因、年度拆解績效，用來看哪一種進出場在貢獻。"""
+    def agg(keyf):
+        out = {}
+        for t in trades:
+            k = keyf(t)
+            o = out.setdefault(k, {"key": k, "trades": 0, "wins": 0, "pts": 0.0, "gross": 0.0})
+            o["trades"] += 1; o["pts"] += t.net_pts; o["gross"] += t.pts
+            o["wins"] += 1 if t.net_pts > 0 else 0
+        rows = sorted(out.values(), key=lambda o: -o["pts"])
+        for o in rows:
+            o["pts"] = round(o["pts"], 1); o["gross"] = round(o["gross"], 1)
+            o["avg"] = round(o["pts"] / o["trades"], 1)
+            o["win_rate"] = round(o["wins"] / o["trades"] * 100, 1)
+        return rows
+    side = lambda t: "多" if t.side > 0 else "空"
+    return {
+        "by_entry": agg(lambda t: f"{side(t)}｜{t.entry_label or '-'}"),
+        "by_exit": agg(lambda t: f"{side(t)}｜{t.exit_label or '-'}"),
+        "by_year": sorted(agg(lambda t: (t.exit_time or "")[:4]), key=lambda o: o["key"]),
+    }
+
+
 def _monthly(trades):
     out = {}
     for t in trades:
@@ -162,6 +185,56 @@ def _monthly(trades):
         o["pts"] = round(o["pts"], 1)
         o["win_rate"] = round(o["wins"] / o["trades"] * 100, 1) if o["trades"] else 0
     return sorted(out.values(), key=lambda x: x["month"])
+
+
+def _same(a, b):
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return a == b
+
+
+def STATE_now_str():
+    from .state import now
+    return now().strftime("%m/%d %H:%M")
+
+
+HISTORY_KEY = "backtest_history"
+HISTORY_MAX = 40
+
+
+def _history_rows(r):
+    """把一次回測濃縮成每策略一列，存進歷史，方便多次結果放在同一張表比較。"""
+    p = r["params"]
+    rows = []
+    for name, x in r["per_strategy"].items():
+        rows.append({
+            "run_at": p.get("run_at"), "note": p.get("note", ""), "strategy": name,
+            "version": x.get("version", ""), "changed": x.get("changed", {}),
+            "start": (p.get("start") or "")[:10], "end": (p.get("end") or "")[:10],
+            "source": p.get("source"), "cost_pts": p.get("cost_pts"), "contract": p.get("contract"),
+            "trades": x.get("trades", 0), "net_pts": x.get("net_pts"), "win_rate": x.get("win_rate"),
+            "profit_factor": x.get("profit_factor"), "max_dd_pts": x.get("max_dd_pts"),
+            "expectancy": x.get("expectancy"),
+            "long": [x.get("long_trades"), x.get("long_pts")], "short": [x.get("short_trades"), x.get("short_pts")],
+        })
+    return rows
+
+
+def history():
+    return DB_.get_kv(HISTORY_KEY, []) or []
+
+
+def history_add(r):
+    try:
+        h = _history_rows(r) + history()
+        DB_.set_kv(HISTORY_KEY, h[:HISTORY_MAX])
+    except Exception as e:
+        STATE.log("WARN", f"回測紀錄寫入失敗：{e}")
+
+
+def history_clear():
+    DB_.set_kv(HISTORY_KEY, [])
 
 
 def _sample(curve, n):
@@ -256,6 +329,7 @@ class Backtester:
                     self._progress = val
                 elif kind == "result":
                     self.result = val
+                    history_add(val)
                     self.progress = f"完成（{time.time() - t0:.1f} 秒）"
                     break
                 elif kind == "error":
@@ -459,11 +533,16 @@ class Backtester:
             e, c2 = 0.0, []
             for t in st:
                 e += t.net_pts; c2.append((t.exit_time, e))
+            defaults = getattr(type(s), "inputs", {}) or {}
+            changed = {k: v for k, v in s.p.items() if k in defaults and not _same(defaults[k], v)}
             per[s.name] = {"name": s.name, "minutes": s.minutes, "lots": s.lots,
-                           "inputs": s.p, **_stats(st, bpv, c2), "monthly": _monthly(st)}
+                           "version": getattr(type(s), "version", ""), "changed": changed,
+                           "inputs": s.p, **_stats(st, bpv, c2), "monthly": _monthly(st),
+                           "groups": _groups(st)}
 
         return {
-            "params": {"source": source, "start": (stats_from + " 00:00") if stats_from else m1[0]["ts"],
+            "params": {"note": (params.get("note") or "").strip()[:60],
+                       "run_at": STATE_now_str(), "source": source, "start": (stats_from + " 00:00") if stats_from else m1[0]["ts"],
                        "end": m1[-1]["ts"], "cost_pts": cost,
                        "warmup_days": warm_used, "warmup_from": m1[0]["ts"][:10],
                        "contract": contract, "bpv": bpv, "bars": len(m1),

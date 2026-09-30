@@ -276,6 +276,7 @@ class OrbitCost30(Strategy):
     參數與 App 對照、校準方式見 orbit.py 註解。預設 paper 模式，不下單。
     """
     name = "Orbit_cost30"
+    version = "v1.1"          # v1.1：修正反手沿用舊停損（2026-09-30）
     desc = "軌道鞅 v1：30 分 K 大量紅黑 K 階梯（多空成本）+ 大小流氓濾網 + 公道伯，回測有守/頂底被破進場"
     minutes = 30
     doc = dict(LADDER="階梯算法：0=開盤法（對照 App）、1=量倍數法", AVL_RESET="公道伯歸零：0=結算日收盤後、1=每月、2=結算日開盤", OPENVOL="開盤法量門檻（口，0=不限）", OPENRULE="開盤法判定：0=只看收盤、1=跳空確認",
@@ -294,6 +295,7 @@ class OrbitCost30(Strategy):
         self.calc = OrbitCalc(self.p)
         self.pos_stop = None
         self.pending_ref = None
+        self.stop_moved = False                   # 只影響出場標籤（原始停損 vs 已移動），不影響行為
 
     def on_bar(self):
         p, c = self.p, self.calc
@@ -318,6 +320,11 @@ class OrbitCost30(Strategy):
         if self.mp != self.mp_prev or self.mp == 0:
             if self.mp == 0:
                 self.pos_stop = None
+                self.stop_moved = False
+            elif self.mp_prev != 0 and (self.mp > 0) != (self.mp_prev > 0):
+                # 反手（多翻空／空翻多）：舊方向的停損價不能沿用，改用新部位的 pending_ref 重算
+                self.pos_stop = None
+                self.stop_moved = False
 
         # ---- 進場
         can = day_ok and self.entries_today < p["ETD"]
@@ -343,7 +350,8 @@ class OrbitCost30(Strategy):
                 self.pos_stop = max(ref - p["BUF"], self.entryprice - p["MAXLOSS"])
             if c.long_ladder and c.long_ladder < C and c.long_ladder - p["BUF"] > self.pos_stop:
                 self.pos_stop = c.long_ladder - p["BUF"]          # 停利點往上設
-            self.sell_stop(self.pos_stop, "階梯停損/停利")
+                self.stop_moved = True
+            self.sell_stop(self.pos_stop, "階梯停損（已上移）" if self.stop_moved else "階梯停損（原始）")
             if p["TP_PCT"]:
                 self.sell_limit(self.entryprice * (1 + p["TP_PCT"] / 100), "滿足點")
             if int(p["EXIT_OPP"]) and c.big == -1:
@@ -354,7 +362,8 @@ class OrbitCost30(Strategy):
                 self.pos_stop = min(ref + p["BUF"], self.entryprice + p["MAXLOSS"])
             if c.short_ladder and c.short_ladder > C and c.short_ladder + p["BUF"] < self.pos_stop:
                 self.pos_stop = c.short_ladder + p["BUF"]         # 停利點往下設
-            self.buytocover_stop(self.pos_stop, "階梯停損/停利")
+                self.stop_moved = True
+            self.buytocover_stop(self.pos_stop, "階梯停損（已下移）" if self.stop_moved else "階梯停損（原始）")
             if p["TP_PCT"]:
                 self.buytocover_limit(self.entryprice * (1 - p["TP_PCT"] / 100), "滿足點")
             if int(p["EXIT_OPP"]) and c.big == 1:

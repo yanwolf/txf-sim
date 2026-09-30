@@ -231,9 +231,13 @@
       </div>
       <div class="desc" id="bt-cap" style="margin:2px 0"></div>
       <div class="row" id="bt-picks"></div>
+      <div class="row"><label>備註 <input type="text" id="bt-note" maxlength="60" placeholder="例：ENTRY 3、關 EXIT_OPP" style="width:220px"></label></div>
       <div class="row"><button class="primary" id="bt-run" onclick="runBT()">開始回測</button><span id="bt-msg" style="font-size:13px"></span></div>
     </div>
     <div id="bt-out"></div>
+    <div class="card" id="bt-hist-card"><h3>回測紀錄比較</h3>
+      <div class="desc">每次回測自動留一列（最近 40 列）。「參數」只列出和預設值不同的項目，金色＝有改動。<a href="#" onclick="clearHist();return false" style="color:var(--blue)">清除紀錄</a></div>
+      <div id="bt-hist"></div></div>
   </div>
 
   <div id="page-cfg" class="page">
@@ -620,7 +624,7 @@ async function runBT(){
   const names=[...document.querySelectorAll('.bt-s:checked')].map(x=>x.value);
   if(!names.length){alert('請至少選一支策略');return;}
   $('bt-run').disabled=true; $('bt-msg').textContent='啟動中…';
-  const body={start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,contract:$('bt-contract').value,strategies:names,warmup_days:$('bt-warm').value,source:$('bt-src').value};
+  const body={start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,contract:$('bt-contract').value,strategies:names,warmup_days:$('bt-warm').value,source:$('bt-src').value,note:$('bt-note').value};
   const r=await fetch('/api/backtest/run',{method:'POST',headers:hdr(),body:JSON.stringify(body)});
   if(!r.ok){$('bt-msg').textContent='無法啟動（可能已在執行）';$('bt-run').disabled=false;return;}
   pollBT();
@@ -633,6 +637,26 @@ async function pollBT(){
   $('bt-run').disabled=st.running;
   if(st.running){setTimeout(pollBT,1500);return;}
   if(st.has_result)renderBT();
+  renderHist();
+}
+function chgText(c){
+  const ks=Object.keys(c||{});
+  return ks.length?`<span class="st-gold">${ks.map(k=>k+'='+c[k]).join('、')}</span>`:'<span style="color:var(--dim)">預設</span>';
+}
+function runTag(p,x){
+  return `<div class="acc" style="padding:8px 12px;margin:0 0 10px"><b>${x?x.name:''}${x&&x.version?' '+x.version:''}</b>　${p.note?'<span class="st-gold">'+p.note+'</span>　':''}參數：${x?chgText(x.changed):''}<div class="desc" style="margin:4px 0 0">${p.run_at||''} 執行　·　${(p.start||'').slice(0,10)} ~ ${(p.end||'').slice(0,10)}　·　單邊成本 ${p.cost_pts} 點</div></div>`;
+}
+async function renderHist(){
+  const r=await fetch('/api/backtest/history',{headers:hdr()}).then(x=>x.json()).catch(()=>({rows:[]}));
+  const rows=r.rows||[];
+  if(!rows.length){$('bt-hist').innerHTML='<div class="empty">尚無紀錄</div>';return;}
+  $('bt-hist').innerHTML=`<div class="scroll"><table><thead><tr><th>時間</th><th>策略</th><th>備註</th><th>參數</th><th>區間</th><th>成本</th><th>筆數</th><th>淨點數</th><th>勝率</th><th>PF</th><th>回撤</th><th>多單</th><th>空單</th></tr></thead><tbody>
+    ${rows.map(h=>`<tr class="num"><td>${h.run_at||''}</td><td style="text-align:left">${h.strategy}${h.version?' '+h.version:''}</td><td style="text-align:left">${h.note||''}</td><td style="text-align:left">${chgText(h.changed)}</td><td>${(h.start||'').slice(2)}~${(h.end||'').slice(2)}</td><td>${h.cost_pts}</td><td>${h.trades}</td><td class="${cls(h.net_pts)}">${M(h.net_pts,1)}</td><td>${h.win_rate??'—'}%</td><td>${h.profit_factor??'—'}</td><td class="down">${M(h.max_dd_pts,1)}</td><td class="${cls(h.long[1])}">${h.long[0]??0}筆 ${M(h.long[1],1)}</td><td class="${cls(h.short[1])}">${h.short[0]??0}筆 ${M(h.short[1],1)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+async function clearHist(){
+  if(!confirm('確定清除全部回測紀錄？'))return;
+  await fetch('/api/backtest/history/clear',{method:'POST',headers:hdr()});
+  renderHist();
 }
 const M=(v,n=0)=>v==null?'—':Number(v).toLocaleString('zh-TW',{maximumFractionDigits:n});
 function kv(k,v,c){return `<div><span>${k}</span><b class="${c||''}">${v}</b></div>`;}
@@ -664,6 +688,15 @@ function monthlyTable(ms){
   return `<table style="margin-top:8px"><thead><tr><th>月份</th><th>淨點數</th><th>交易</th><th>勝率</th></tr></thead><tbody>
     ${ms.map(m=>`<tr class="num"><td>${m.month}</td><td class="${cls(m.pts)}">${M(m.pts,1)}</td><td>${m.trades}</td><td>${m.win_rate}%</td></tr>`).join('')}</tbody></table>`;
 }
+function groupTable(title,rows){
+  if(!rows||!rows.length)return '';
+  return `<div class="desc" style="margin-top:12px">${title}</div><div class="scroll"><table><thead><tr><th>類別</th><th>交易</th><th>淨點數</th><th>毛點數</th><th>平均</th><th>勝率</th></tr></thead><tbody>
+    ${rows.map(g=>`<tr class="num"><td style="text-align:left">${g.key}</td><td>${g.trades}</td><td class="${cls(g.pts)}">${M(g.pts,1)}</td><td class="${cls(g.gross)}">${M(g.gross,1)}</td><td class="${cls(g.avg)}">${M(g.avg,1)}</td><td>${g.win_rate}%</td></tr>`).join('')}</tbody></table></div>`;
+}
+function groupBlock(g){
+  if(!g)return '';
+  return groupTable('依年度',g.by_year)+groupTable('依進場原因',g.by_entry)+groupTable('依出場原因（淨＝扣成本後，毛＝未扣成本）',g.by_exit);
+}
 function equitySVG(eq){
   if(!eq||eq.length<2)return '';
   const w=680,h=160,vs=eq.map(p=>p.eq),mn=Math.min(0,...vs),mx=Math.max(0,...vs),rg=(mx-mn)||1;
@@ -682,13 +715,14 @@ async function renderBT(){
   const names=Object.keys(r.per_strategy);
   $('bt-out').innerHTML=`
     <div class="card"><h3>組合績效</h3>
+      ${names.length===1?runTag(p,r.per_strategy[names[0]]):runTag(p,null)}
       <div class="desc">${p.start} ~ ${p.end}　·　${M(p.bars)} 根 1 分 K　·　${p.days} 個交易日　·　${p.source==='mc'?'MC 歷史':'永豐即時'}　·　${p.contract} 每點 ${p.bpv} 元　·　單邊成本 ${p.cost_pts} 點${p.warmup_days?`　·　暖機 ${p.warmup_days} 個交易日（自 ${p.warmup_from}，不計交易）`:''}</div>
       ${statBlock(c,p.bpv)}
       ${equitySVG(r.equity)}
       ${monthlyTable(c.monthly)}
     </div>
     ${names.map(n=>{const x=r.per_strategy[n];return `<div class="card"><h3>${n}</h3>
-      <div class="desc">${x.minutes} 分 K · ${x.lots} 口</div>${statBlock(x,p.bpv)}${monthlyTable(x.monthly)}</div>`;}).join('')}
+      ${runTag(p,x)}<div class="desc">${x.minutes} 分 K · ${x.lots} 口</div>${statBlock(x,p.bpv)}${groupBlock(x.groups)}${monthlyTable(x.monthly)}</div>`;}).join('')}
     ${r.open_positions.length?`<div class="card"><h3>回測結束時仍持倉</h3>${r.open_positions.map(t=>`<div style="font-size:13px">${t.strategy}　${t.side}　${M(t.entry_price)} → ${M(t.exit_price)}　<b class="${cls(t.net_pts)}">${M(t.net_pts,1)} 點</b>（以最後價估算）</div>`).join('')}</div>`:''}
     <div class="card"><h3>交易明細</h3>
       <div class="desc">共 ${M(r.trade_count)} 筆${r.trade_count>r.trades.length?`，以下顯示最近 ${r.trades.length} 筆`:''}　·　<a href="/api/backtest/csv" style="color:var(--blue)">下載完整 CSV</a></div>
