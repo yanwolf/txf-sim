@@ -277,14 +277,14 @@ class OrbitCost30(Strategy):
     name = "Orbit_cost30"
     desc = "軌道鞅 v1：30 分 K 大量紅黑 K 階梯（多空成本）+ 大小流氓濾網 + 公道伯，回測有守/頂底被破進場"
     minutes = 30
-    doc = dict(LADDER="階梯算法：0=開盤法（對照 App）、1=量倍數法", AVL_RESET="公道伯歸零：0=結算日、1=每月",
+    doc = dict(LADDER="階梯算法：0=開盤法（對照 App）、1=量倍數法", AVL_RESET="公道伯歸零：0=結算日收盤後、1=每月、2=結算日開盤", OPENVOL="開盤法量門檻（口，0=不限）",
                VOLN="大量判定：同時段近幾根均量", VOLX="大量判定：均量倍數", BODY="大量 K 最小實體（點）",
                DAYONLY="1=一般盤（只看日盤）、0=合併盤", MA1="小流氓均線期數", MA2="大流氓均線期數",
                USE_AVL="1=用公道伯過濾方向", SIDE="0=多空、1=只做多、-1=只做空",
                ENTRY="1=回測有守、2=頂底被破、3=兩者", TOUCH="回測判定：離階梯幾點內算碰到",
                BUF="停損：階梯外再留幾點", MAXLOSS="單筆最大停損點數", TP_PCT="滿足點停利（%，0=不設）",
                EXIT_OPP="1=反向大量 K 出場", ETD="每日最多進場次數", TNw="週六幾點後不留單（HHMM）")
-    inputs = dict(LADDER=0, AVL_RESET=0, VOLN=20, VOLX=2.0, BODY=0, DAYONLY=0, MA1=20, MA2=40, USE_AVL=1, SIDE=0, ENTRY=3,
+    inputs = dict(LADDER=0, AVL_RESET=0, OPENVOL=0, VOLN=20, VOLX=2.0, BODY=0, DAYONLY=0, MA1=20, MA2=40, USE_AVL=1, SIDE=0, ENTRY=3,
                   TOUCH=20, BUF=10, MAXLOSS=150, TP_PCT=1.2, EXIT_OPP=1, ETD=2, TNw=330)
 
     def __init__(self, cfg):

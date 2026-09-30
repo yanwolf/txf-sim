@@ -16,7 +16,8 @@
   LADDER=1（量倍數法，舊版）
     成交量 ≥ 同類時段近 VOLN 根均量 × VOLX 的紅/黑 K，取其低點/高點當階梯
   大小流氓   ：MA1、MA2（30 分 K 的 20MA、40MA；40MA ≈ 60 分 K 的 20MA）
-  公道伯 AVL ：成交量加權均價。AVL_RESET=0 結算日日盤收盤後歸零；1 = 每月第一根 K 歸零
+  公道伯 AVL ：成交量加權均價。AVL_RESET=0 結算日收盤後歸零；1 = 每月第一根；2 = 結算日當天開盤（含結算日）
+  OPENVOL    ：開盤法的量門檻，時段首根量未達此口數就不更新階梯（0 = 不限）
   DAYONLY=1  ：一般盤（只用日盤 K 計算大量與階梯）；0 = 合併盤
 """
 from collections import deque
@@ -42,6 +43,7 @@ class OrbitCalc:
         self.cur_sess = None          # 開盤法：目前時段
         self.ref_close = None         # 開盤法：上一根（納入計算的）K 收盤
         self.last_month = None
+        self.last_avl_sess = None
 
     def update(self, b, trading_days):
         """餵一根已收盤的 N 分 K。同一根重複餵會被忽略。"""
@@ -59,14 +61,20 @@ class OrbitCalc:
 
         # 公道伯：結算日日盤收盤後的下一根開始歸零
         mon = (b["date"].year, b["date"].month)
-        if int(p.get("AVL_RESET", 0)) == 1:
+        mode = int(p.get("AVL_RESET", 0))
+        if mode == 1:
             if self.last_month is not None and mon != self.last_month:
+                self.pv = self.vv = 0.0
+            self.avl_reset_next = False
+        elif mode == 2:                                   # 結算日當天日盤開盤就歸零（含結算日）
+            if b["is_day"] and b["session"] != self.last_avl_sess and tf.settlement_day(b["date"], trading_days):
                 self.pv = self.vv = 0.0
             self.avl_reset_next = False
         elif self.avl_reset_next:
             self.pv = self.vv = 0.0
             self.avl_reset_next = False
         self.last_month = mon
+        self.last_avl_sess = b["session"]
         v = b.get("volume") or 0
         tp = (b["high"] + b["low"] + b["close"]) / 3
         self.pv += tp * v
@@ -81,7 +89,7 @@ class OrbitCalc:
         if use and int(p.get("LADDER", 0)) == 0:
             if b["session"] != self.cur_sess:            # 時段第一根
                 ref = self.ref_close
-                if ref is not None:
+                if ref is not None and v >= float(p.get("OPENVOL", 0)):
                     if b["close"] > ref:
                         self.big = 1
                         self.long_ladder, self.long_ts = ref, b["ts"]

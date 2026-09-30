@@ -102,6 +102,7 @@
     "inputs": {
       "LADDER": 0,
       "AVL_RESET": 0,
+      "OPENVOL": 0,
       "VOLN": 20,
       "VOLX": 2.0,
       "BODY": 0,
