@@ -157,6 +157,34 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+        elif u.path == "/api/hist/months":
+            from .db import DB_
+            y = q.get("year", [""])[0][:4]
+            ms = DB_.hist_months(y) if y.isdigit() else []
+            # 以該年中位數為基準判斷偏少：日盤每日根數、夜盤每日根數
+            for m in ms:
+                m["day_avg"] = round(m["day"] / m["day_days"]) if m["day_days"] else 0
+                m["night_avg"] = round(m["night"] / m["night_days"]) if m["night_days"] else 0
+            med = lambda xs: sorted(xs)[len(xs) // 2] if xs else 0
+            md = med([m["day_avg"] for m in ms if m["day_avg"]])
+            mn = med([m["night_avg"] for m in ms if m["night_avg"]])
+            for m in ms:
+                notes = []
+                if m["bars"] == 0:
+                    m["notes"] = ["整月無資料"]
+                    continue
+                if m["day_days"] < 12:
+                    notes.append(f"交易日只有 {m['day_days']} 天")
+                if md and m["day_avg"] and m["day_avg"] < md * 0.75:
+                    notes.append("日盤每日根數偏少")
+                if mn and m["night_days"] == 0:
+                    notes.append("整月沒有夜盤")
+                elif mn and m["night_avg"] and m["night_avg"] < mn * 0.75:
+                    notes.append("夜盤每日根數偏少")
+                elif mn and m["day_days"] and m["night_days"] < m["day_days"] * 0.7:
+                    notes.append(f"夜盤只有 {m['night_days']} 天")
+                m["notes"] = notes
+            self._send(200, {"year": y, "months": ms, "day_median": md, "night_median": mn}); return
         elif u.path == "/api/hist/summary":
             from .db import DB_
             ys = DB_.hist_summary()

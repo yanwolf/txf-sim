@@ -213,6 +213,7 @@
       <div id="hist-prog" style="font-size:13px"></div>
       <div class="bar" id="hist-bar" style="display:none"><div id="hist-fill"></div></div>
       <div id="hist-sum" class="desc" style="margin-top:8px"></div>
+      <div id="hist-months"></div>
     </div>
     <div class="card">
       <h3>回測條件</h3>
@@ -499,8 +500,25 @@ async function histSummary(){
   const tot=d.years.reduce((a,y)=>a+y.bars,0);
   const thin=d.years.filter(y=>y.thin);
   $('hist-sum').innerHTML=`已匯入 ${tot.toLocaleString()} 根，${d.years[0].from} ～ ${d.years[d.years.length-1].to}<br>`+
-    d.years.map(y=>`<span class="${y.thin?'st-bad':''}">${y.year}：${y.bars.toLocaleString()}</span>`).join('　')+
+    '<span style="font-size:11px">點年份看各月份明細</span><br>'+
+    d.years.map(y=>`<a href="#" onclick="histMonths('${y.year}');return false" class="${y.thin?'st-bad':''}" style="${y.thin?'':'color:var(--ink)'};text-decoration:underline dotted">${y.year}：${y.bars.toLocaleString()}</a>`).join('　')+
     (thin.length?`<br><span class="st-bad">⚠️ ${thin.map(y=>y.year).join('、')} 的根數明顯偏少（其他年份約 ${d.median.toLocaleString()}），可能匯出時有缺漏，該區間的回測結果會失真</span>`:'');
+}
+async function histMonths(y){
+  const box=$('hist-months');
+  if(box.dataset.year===y&&box.innerHTML){box.innerHTML='';box.dataset.year='';return;}   // 再點一次收起
+  box.dataset.year=y; box.innerHTML='<div class="desc">讀取中…</div>';
+  const d=await fetch('/api/hist/months?year='+y,{headers:hdr()}).then(r=>r.json()).catch(()=>null);
+  if(!d||!d.months.length){box.innerHTML='<div class="desc">沒有資料</div>';return;}
+  const f=v=>v?v.toLocaleString():'—';
+  box.innerHTML=`<div class="desc" style="margin-top:8px">${y} 年：日盤每日中位數約 ${f(d.day_median)} 根${d.night_median?`、夜盤約 ${f(d.night_median)} 根`:'（無夜盤）'}</div>
+  <div class="scroll" style="max-height:none"><table>
+    <thead><tr><th>月份</th><th>日盤天數</th><th>日盤均/日</th><th>夜盤天數</th><th>夜盤均/日</th><th>狀態</th></tr></thead>
+    <tbody>${d.months.map(m=>`<tr class="num"><td>${m.month.slice(5)} 月</td>
+      <td>${m.day_days}</td><td class="${m.notes.some(n=>n.includes('日盤'))?'st-bad':''}">${f(m.day_avg)}</td>
+      <td>${m.night_days}</td><td class="${m.notes.some(n=>n.includes('夜盤'))?'st-bad':''}">${f(m.night_avg)}</td>
+      <td style="text-align:left;white-space:normal">${m.notes.length?`<span class="st-bad">${m.notes.join('、')}</span>`:'<span class="st-ok">正常</span>'}</td></tr>`).join('')}</tbody>
+  </table></div>`;
 }
 async function histFromUrl(){
   if(AUTH.protected&&!AUTH.authed){alert('請先到「設定」分頁登入');return;}

@@ -205,6 +205,31 @@ class DB:
                         fetch=True) or []
         return [{"year": r[0], "bars": r[1], "from": r[2], "to": r[3]} for r in rows]
 
+    def hist_months(self, year):
+        """某年各月份的資料完整度：交易日數、日盤/夜盤根數。夜盤過午夜的 K 歸在它的曆法月份。"""
+        t = "substr(ts,12,5)"
+        day = f"({t} >= '08:45' AND {t} <= '13:44')"
+        night = f"({t} >= '15:00' OR {t} < '05:00')"
+        rows = self.run(
+            f"SELECT substr(ts,1,7), COUNT(*), "
+            f"SUM(CASE WHEN {day} THEN 1 ELSE 0 END), "
+            f"SUM(CASE WHEN {night} THEN 1 ELSE 0 END), "
+            f"COUNT(DISTINCT CASE WHEN {day} THEN substr(ts,1,10) END), "
+            f"COUNT(DISTINCT CASE WHEN {t} >= '15:00' THEN substr(ts,1,10) END) "
+            f"FROM hist_bars WHERE ts >= ? AND ts < ? GROUP BY substr(ts,1,7) ORDER BY 1",
+            (f"{year}-01-01", f"{int(year) + 1}-01-01"), fetch=True) or []
+        got = {r[0]: {"month": r[0], "bars": int(r[1]), "day": int(r[2] or 0), "night": int(r[3] or 0),
+                      "day_days": int(r[4] or 0), "night_days": int(r[5] or 0)} for r in rows}
+        # 補上整月沒資料的月份（只在整體資料涵蓋範圍內，避免把資料起點之前也當成缺漏）
+        rng = self.run("SELECT MIN(ts), MAX(ts) FROM hist_bars", fetch=True)
+        lo, hi = (rng[0][0] or "")[:7], (rng[0][1] or "")[:7]
+        out = []
+        for mth in range(1, 13):
+            key = f"{year}-{mth:02d}"
+            if lo and hi and lo <= key <= hi:
+                out.append(got.get(key, {"month": key, "bars": 0, "day": 0, "night": 0, "day_days": 0, "night_days": 0}))
+        return out
+
     def hist_clear(self):
         self.run("DELETE FROM hist_bars")
 
