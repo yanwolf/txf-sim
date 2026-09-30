@@ -2,6 +2,8 @@
 
 每支的 on_bar() 逐行對照原 PowerLanguage，註解標原碼。
 """
+from datetime import date, timedelta
+
 from .el import Strategy, TICKSIZE
 
 
@@ -260,6 +262,114 @@ class GuYuan2025(Strategy):
 
 
 # ⚠️ 指標參數（LADDER/OPENRULE/OPENVOL/AVL_RESET/MA1/MA2）已校準鎖定，見 ORBIT_HANDOFF.md；改進請加新參數，預設維持現行行為
+class GapTracker:
+    """日 K 奇襲缺口追蹤（v3 Orbit_gap 與 v1 的 USE_GAP 濾網共用，不要各寫一份）。
+
+    日 K 用已收盤的 N 分 K 逐根合成，不讀引擎的 days（那份含未來資料）。
+      daymode 1=只用日盤 08:45–13:45；0=前一晚夜盤＋當天日盤合併（同期交所交易日）
+      mode    1=真缺口（今低>昨高，防守點＝昨高）、2=實體缺口（防守點＝昨日實體上緣）、
+              3=開盤跳空（今開、今收都在昨收外，防守點＝昨收）；空方皆鏡像
+    缺口在日 K 收盤時確認。只追蹤最新一個缺口（缺口自成一局）。
+      gap       目前有效的缺口（回補或過期就變 None）
+      last_dir  最近一次出現的缺口方向（回補後仍保留，直到反向缺口出現）＝發球權
+    """
+
+    def __init__(self, daymode=1, mode=1, gmin=0, max_days=0):
+        self.daymode, self.mode, self.gmin, self.max_days = int(daymode), int(mode), float(gmin), int(max_days)
+        self.cur_day = None
+        self.prev_day = None
+        self.days_done = 0
+        self.last_fed = None
+        self.gap = None                       # {"dir":1/-1, "def":防守點, "far":缺口另一端, "date":, "age":}
+        self.last_dir = 0
+        self.new_gap_dir = 0                  # 這一輪 feed 剛確認的缺口方向
+
+    def _day_key(self, b):
+        ses = b["session"]
+        if ses.endswith("D"):
+            return ses[:10]
+        if self.daymode:
+            return None
+        return "N" + ses[:10]                 # 夜盤暫用自己的鍵，遇到隔天日盤時合併
+
+    def _close_day(self):
+        d = self.cur_day
+        self.cur_day = None
+        if d is None:
+            return
+        self.new_gap_dir = 0
+        pv = self.prev_day
+        self.prev_day = d
+        self.days_done += 1
+        if self.gap is not None:
+            self.gap["age"] += 1
+            if self.max_days and self.gap["age"] > self.max_days:
+                self.gap = None
+        if pv is None:
+            return
+        mode, gmin = self.mode, self.gmin
+        up = dn = None
+        if mode == 1:
+            if d["low"] > pv["high"] and d["low"] - pv["high"] >= gmin:
+                up = (pv["high"], d["low"])
+            if d["high"] < pv["low"] and pv["low"] - d["high"] >= gmin:
+                dn = (pv["low"], d["high"])
+        elif mode == 2:
+            pt, pb = max(pv["open"], pv["close"]), min(pv["open"], pv["close"])
+            tt, tb = max(d["open"], d["close"]), min(d["open"], d["close"])
+            if tb > pt and tb - pt >= gmin:
+                up = (pt, tb)
+            if tt < pb and pb - tt >= gmin:
+                dn = (pb, tt)
+        else:
+            pc = pv["close"]
+            if d["open"] > pc and d["close"] > pc and d["open"] - pc >= gmin:
+                up = (pc, d["open"])
+            if d["open"] < pc and d["close"] < pc and pc - d["open"] >= gmin:
+                dn = (pc, d["open"])
+        g = up or dn
+        if g:
+            direction = 1 if up else -1
+            self.gap = {"dir": direction, "def": g[0], "far": g[1], "date": d["key"], "age": 0}
+            self.new_gap_dir = direction
+            self.last_dir = direction
+
+    def _feed(self, b):
+        key = self._day_key(b)
+        if key is None:
+            return
+        if self.cur_day is not None and self.cur_day["key"] != key:
+            merge = (key[0] != "N" and self.cur_day["key"].startswith("N") and
+                     date.fromisoformat(self.cur_day["key"][1:]) + timedelta(days=1) == date.fromisoformat(key))
+            if merge:
+                self.cur_day["key"] = key     # 前一晚夜盤併入今天日盤
+            else:
+                self._close_day()
+        if self.cur_day is None:
+            self.cur_day = {"key": key, "open": b["open"], "high": b["high"], "low": b["low"], "close": b["close"]}
+        else:
+            d = self.cur_day
+            d["high"] = max(d["high"], b["high"]); d["low"] = min(d["low"], b["low"]); d["close"] = b["close"]
+        if b.get("is_day_last") and key[0] != "N":
+            self._close_day()                 # 日盤最後一根收盤＝日 K 收盤
+
+    def update(self, bars):
+        """餵進還沒看過的 K（重啟回放時可能一次很多根）。回傳這一輪有沒有新缺口。"""
+        self.new_gap_dir = 0
+        i = len(bars) - 1
+        while i >= 0 and (self.last_fed is None or bars[i]["ts"] > self.last_fed):
+            i -= 1
+        for bb in bars[i + 1:]:
+            self._feed(bb)
+            self.last_fed = bb["ts"]
+
+    def check_fill(self, close, buf):
+        """收盤跌破（多）/ 站上（空）防守點 ±buf → 缺口回補失效。"""
+        g = self.gap
+        if g and ((g["dir"] > 0 and close < g["def"] - buf) or (g["dir"] < 0 and close > g["def"] + buf)):
+            self.gap = None
+
+
 class OrbitCost30(Strategy):
     """軌道鞅 v1：30 分 K 多空成本（大量紅黑 K 階梯）+ 大小流氓濾網 + 公道伯方向。
 
@@ -276,7 +386,7 @@ class OrbitCost30(Strategy):
     參數與 App 對照、校準方式見 orbit.py 註解。預設 paper 模式，不下單。
     """
     name = "Orbit_cost30"
-    version = "v1.1"          # v1.1：修正反手沿用舊停損（2026-09-30）
+    version = "v1.2"          # v1.1：修正反手沿用舊停損；v1.2：加 USE_GAP 日 K 缺口發球權濾網（預設關）
     desc = "軌道鞅 v1：30 分 K 大量紅黑 K 階梯（多空成本）+ 大小流氓濾網 + 公道伯，回測有守/頂底被破進場"
     minutes = 30
     doc = dict(LADDER="階梯算法：0=開盤法（對照 App）、1=量倍數法", AVL_RESET="公道伯歸零：0=結算日收盤後、1=每月、2=結算日開盤", OPENVOL="開盤法量門檻（口，0=不限）", OPENRULE="開盤法判定：0=只看收盤、1=跳空確認",
@@ -285,14 +395,21 @@ class OrbitCost30(Strategy):
                USE_AVL="1=用公道伯過濾方向", SIDE="0=多空、1=只做多、-1=只做空",
                ENTRY="1=回測有守、2=頂底被破、3=兩者", TOUCH="回測判定：離階梯幾點內算碰到",
                BUF="停損：階梯外再留幾點", MAXLOSS="單筆最大停損點數", TP_PCT="滿足點停利（%，0=不設）",
-               EXIT_OPP="1=反向大量 K 出場", ETD="每日最多進場次數", TNw="週六幾點後不留單（HHMM）")
+               EXIT_OPP="1=反向大量 K 出場", ETD="每日最多進場次數", TNw="週六幾點後不留單（HHMM）",
+               USE_GAP="日 K 缺口發球權濾網：0=不用、1=只順最近一次缺口方向（回補後仍算，直到反向缺口）、2=只在缺口未回補時",
+               GAP_DAYMODE="缺口用的日 K：1=只用日盤、0=夜盤＋日盤合併", GAP_MODE="缺口定義：1=真缺口、2=實體缺口、3=開盤跳空",
+               GAP_MIN="缺口最小點數（0=不限）", GAP_DAYS="缺口有效日 K 數（0=不限，只影響 USE_GAP=2）")
     inputs = dict(LADDER=0, AVL_RESET=2, OPENVOL=0, OPENRULE=1, VOLN=20, VOLX=2.0, BODY=0, DAYONLY=0, MA1=20, MA2=40, USE_AVL=1, SIDE=0, ENTRY=3,
-                  TOUCH=20, BUF=10, MAXLOSS=150, TP_PCT=1.2, EXIT_OPP=1, ETD=2, TNw=330)
+                  TOUCH=20, BUF=10, MAXLOSS=150, TP_PCT=1.2, EXIT_OPP=1, ETD=2, TNw=330,
+                  USE_GAP=0, GAP_DAYMODE=1, GAP_MODE=1, GAP_MIN=0, GAP_DAYS=0)
 
     def __init__(self, cfg):
         super().__init__(cfg)
         from .orbit import OrbitCalc
         self.calc = OrbitCalc(self.p)
+        p = self.p
+        self.gt = GapTracker(p["GAP_DAYMODE"], p["GAP_MODE"], p["GAP_MIN"], p["GAP_DAYS"]) \
+            if int(p.get("USE_GAP", 0)) else None
         self.pos_stop = None
         self.pending_ref = None
         self.stop_moved = False                   # 只影響出場標籤（原始停損 vs 已移動），不影響行為
@@ -316,6 +433,15 @@ class OrbitCost30(Strategy):
         if int(p["USE_AVL"]) and c.avl:
             bull = bull and C > c.avl
             bear = bear and C < c.avl
+        if self.gt is not None:                   # 日 K 缺口發球權：只順奇襲方向進場（只影響進場，不影響出場）
+            self.gt.update(self.bars)
+            if int(p["USE_GAP"]) == 2:
+                self.gt.check_fill(C, p["BUF"])
+                serve = self.gt.gap["dir"] if self.gt.gap else 0
+            else:
+                serve = self.gt.last_dir
+            bull = bull and serve == 1
+            bear = bear and serve == -1
 
         if self.mp != self.mp_prev or self.mp == 0:
             if self.mp == 0:
@@ -381,25 +507,23 @@ class OrbitCost30(Strategy):
                 "空方階梯": r1(c.short_ladder), "空方階梯時間": c.short_ts,
                 f"MA{int(self.p['MA1'])}": r1(c.ma1), f"MA{int(self.p['MA2'])}": r1(c.ma2),
                 "公道伯 AVL": r1(c.avl), "本根大量": {1: "紅", -1: "黑", 0: "否"}[c.big],
-                "持倉停損價": r1(self.pos_stop), "今日進場次數": self.entries_today}
+                "持倉停損價": r1(self.pos_stop), "今日進場次數": self.entries_today,
+                **({"缺口發球權": {1: "多", -1: "空", 0: "無"}[self.gt.last_dir],
+                    "有效缺口": ({1: "多", -1: "空"}[self.gt.gap["dir"]] + f" 防守 {r1(self.gt.gap['def'])}") if self.gt.gap else "無"}
+                   if self.gt is not None else {})}
 
 
 class OrbitGap(Strategy):
     """軌道鞅 v3：日 K 奇襲缺口（奇襲方擁有發球權，回測奇襲防守點有守進場）。
 
-    日 K 在策略內部用已收盤的 N 分 K 逐根合成，不讀引擎的 days（那份含未來資料）。
-      DAYMODE 1=只用日盤 08:45–13:45 組日 K；0=前一晚夜盤＋當天日盤合併（同期交所交易日）
-    缺口在「日 K 收盤」時確認，隔天起才可進場（不偷看當天）：
-      GAP_MODE 1=真缺口：今低 > 昨高（空：今高 < 昨低），防守點＝昨高（昨低）
-               2=實體缺口：今日實體完全在昨日實體之上（下），防守點＝昨日實體上緣（下緣）
-               3=開盤跳空：今開、今收都在昨收之上（下），防守點＝昨收（v1 開盤法的日 K 版）
-      GAP_MIN：缺口至少幾點（今日對應價與防守點的距離）
-    缺口自成一局：只追蹤最新一個缺口；新缺口（任一方向）出現就取代舊的。
+    日 K 合成與缺口判定見 GapTracker（DAYMODE、GAP_MODE、GAP_MIN、GAP_DAYS）。
+    缺口在「日 K 收盤」時確認，隔天起才可進場（不偷看當天）。
     缺口失效：收盤跌破（多）/ 站上（空）防守點 ±BUF 視為回補；GAP_DAYS>0 時超過幾個日 K 也失效。
     進場：多方缺口有效時，K 低點回測到 防守點+TOUCH 內且收盤守住 → 下一根市價進多（空方鏡像）
     出場：停損 防守點−BUF（上限 MAXLOSS）；滿足點 TP_PCT %；EXIT_OPP=1 出現反向缺口就出場；
           結算日收盤、週六 TNw 後出場（與 v1 相同）
     USE_AVL=1 時加公道伯方向濾網（直接用 v1 的 OrbitCalc，不另寫）。預設 paper 模式，不下單。
+    2017/8～2026/9 回測：單獨進場沒有優勢（見 ORBIT_HANDOFF.md），保留作研究用。
     """
     name = "Orbit_gap"
     version = "v3.0"
@@ -419,111 +543,37 @@ class OrbitGap(Strategy):
         super().__init__(cfg)
         if "mode" not in cfg:
             self.mode = "paper"               # 新策略沒設定時一律 paper，避免誤下單
-        self.cur_day = None                   # 正在累積的日 K
-        self.prev_day = None                  # 上一根已收盤日 K
-        self.days_done = 0
-        self.last_fed = None
-        self.gap = None                       # {"dir":1/-1, "def":防守點, "far":缺口另一端, "date":, "age":}
-        self.new_gap_dir = 0                  # 這根 K 剛確認的缺口方向（給 EXIT_OPP）
+        p = self.p
+        self.gt = GapTracker(p["DAYMODE"], p["GAP_MODE"], p["GAP_MIN"], p["GAP_DAYS"])
         self.pos_stop = None
         self.pos_ref = None
         self.avl_calc = None
-        if int(self.p.get("USE_AVL", 0)):
+        if int(p.get("USE_AVL", 0)):
             from .orbit import OrbitCalc
             self.avl_calc = OrbitCalc(dict(OrbitCost30.inputs))   # 公道伯用 v1 已校準的預設參數
 
-    # ---- 日 K 合成
-    def _day_key(self, b):
-        """回傳這根 K 所屬的日 K 鍵；DAYMODE=1 時夜盤回 None（不納入）。"""
-        ses = b["session"]
-        if ses.endswith("D"):
-            return ses[:10]
-        if int(self.p["DAYMODE"]):
-            return None
-        return "N" + ses[:10]                 # 夜盤暫用自己的鍵，遇到隔天日盤時合併
+    @property
+    def gap(self): return self.gt.gap
 
-    def _close_day(self):
-        d = self.cur_day
-        self.cur_day = None
-        if d is None:
-            return
-        self.new_gap_dir = 0
-        pv = self.prev_day
-        self.prev_day = d
-        self.days_done += 1
-        if self.gap is not None:
-            self.gap["age"] += 1
-            if int(self.p["GAP_DAYS"]) and self.gap["age"] > int(self.p["GAP_DAYS"]):
-                self.gap = None
-        if pv is None:
-            return
-        mode, gmin = int(self.p["GAP_MODE"]), float(self.p["GAP_MIN"])
-        up = dn = None
-        if mode == 1:
-            if d["low"] > pv["high"] and d["low"] - pv["high"] >= gmin:
-                up = (pv["high"], d["low"])
-            if d["high"] < pv["low"] and pv["low"] - d["high"] >= gmin:
-                dn = (pv["low"], d["high"])
-        elif mode == 2:
-            pt, pb = max(pv["open"], pv["close"]), min(pv["open"], pv["close"])
-            tt, tb = max(d["open"], d["close"]), min(d["open"], d["close"])
-            if tb > pt and tb - pt >= gmin:
-                up = (pt, tb)
-            if tt < pb and pb - tt >= gmin:
-                dn = (pb, tt)
-        else:
-            pc = pv["close"]
-            if d["open"] > pc and d["close"] > pc and d["open"] - pc >= gmin:
-                up = (pc, d["open"])
-            if d["open"] < pc and d["close"] < pc and pc - d["open"] >= gmin:
-                dn = (pc, d["open"])
-        g = up or dn
-        if g:
-            direction = 1 if up else -1
-            self.gap = {"dir": direction, "def": g[0], "far": g[1], "date": d["key"], "age": 0}
-            self.new_gap_dir = direction
+    @property
+    def days_done(self): return self.gt.days_done
 
-    def _feed(self, b):
-        key = self._day_key(b)
-        if key is None:
-            return
-        if self.cur_day is not None and self.cur_day["key"] != key:
-            merge = (key[0] != "N" and self.cur_day["key"].startswith("N") and
-                     __import__("datetime").date.fromisoformat(self.cur_day["key"][1:]) +
-                     __import__("datetime").timedelta(days=1) == __import__("datetime").date.fromisoformat(key))
-            if merge:
-                self.cur_day["key"] = key     # 前一晚夜盤併入今天日盤
-            else:
-                self._close_day()
-        if self.cur_day is None:
-            self.cur_day = {"key": key, "open": b["open"], "high": b["high"], "low": b["low"], "close": b["close"]}
-        else:
-            d = self.cur_day
-            d["high"] = max(d["high"], b["high"]); d["low"] = min(d["low"], b["low"]); d["close"] = b["close"]
-        if b.get("is_day_last") and key[0] != "N":
-            self._close_day()                 # 日盤最後一根收盤＝日 K 收盤
-
-    # ---- 策略
     def on_bar(self):
         p = self.p
-        i = len(self.bars) - 1
-        while i >= 0 and (self.last_fed is None or self.bars[i]["ts"] > self.last_fed):
-            i -= 1
-        self.new_gap_dir = 0
-        for bb in self.bars[i + 1:]:
-            self._feed(bb)
-            if self.avl_calc:
-                self.avl_calc.update(bb, self.trading_days)
-            self.last_fed = bb["ts"]
+        self.gt.update(self.bars)
+        if self.avl_calc:
+            c = self.avl_calc
+            i = len(self.bars) - 1
+            while i >= 0 and (c.last_ts is None or self.bars[i]["ts"] > c.last_ts):
+                i -= 1
+            for bb in self.bars[i + 1:]:
+                c.update(bb, self.trading_days)
         if self.mp == 0 or (self.mp_prev != 0 and (self.mp > 0) != (self.mp_prev > 0)):
             self.pos_stop = None              # 空手或反手：停損價重算（v1.1 的教訓）
         C, L, H = self.C(), self.L(), self.H()
         side = int(p["SIDE"])
-        g = self.gap
-
-        # 缺口回補 → 失效
-        if g and ((g["dir"] > 0 and C < g["def"] - p["BUF"]) or (g["dir"] < 0 and C > g["def"] + p["BUF"])):
-            self.gap = g = None
+        self.gt.check_fill(C, p["BUF"])       # 缺口回補 → 失效
+        g = self.gt.gap
 
         avl = self.avl_calc.avl if self.avl_calc else None
         long_ok = avl is None or C > avl
@@ -541,6 +591,7 @@ class OrbitGap(Strategy):
                 self.sellshort_market("回測空方缺口有守")
 
         # ---- 出場
+        new_dir = self.gt.new_gap_dir
         if self.mp > 0 and self.entryprice is not None:
             if self.pos_stop is None:
                 ref = self.pos_ref or self.entryprice - p["MAXLOSS"]
@@ -548,7 +599,7 @@ class OrbitGap(Strategy):
             self.sell_stop(self.pos_stop, "缺口停損")
             if p["TP_PCT"]:
                 self.sell_limit(self.entryprice * (1 + p["TP_PCT"] / 100), "滿足點")
-            if int(p["EXIT_OPP"]) and self.new_gap_dir == -1:
+            if int(p["EXIT_OPP"]) and new_dir == -1:
                 self.sell_market("反向缺口出現")
         if self.mp < 0 and self.entryprice is not None:
             if self.pos_stop is None:
@@ -557,7 +608,7 @@ class OrbitGap(Strategy):
             self.buytocover_stop(self.pos_stop, "缺口停損")
             if p["TP_PCT"]:
                 self.buytocover_limit(self.entryprice * (1 - p["TP_PCT"] / 100), "滿足點")
-            if int(p["EXIT_OPP"]) and self.new_gap_dir == 1:
+            if int(p["EXIT_OPP"]) and new_dir == 1:
                 self.buytocover_market("反向缺口出現")
 
         if self.checkday:
@@ -566,12 +617,13 @@ class OrbitGap(Strategy):
             self.exit_market("週末出場")
 
     def debug(self):
-        g = self.gap
+        g = self.gt.gap
         r1 = lambda x: round(x, 1) if x is not None else None
-        return {"收盤": self.C(), "日K數": self.days_done,
+        return {"收盤": self.C(), "日K數": self.gt.days_done,
                 "缺口方向": {1: "多", -1: "空"}.get(g["dir"]) if g else "無",
                 "防守點": r1(g["def"]) if g else None, "缺口另一端": r1(g["far"]) if g else None,
                 "缺口日": g["date"] if g else None, "缺口已過日K": g["age"] if g else None,
+                "發球權（最近缺口）": {1: "多", -1: "空", 0: "無"}[self.gt.last_dir],
                 "持倉停損價": r1(self.pos_stop), "今日進場次數": self.entries_today}
 
 

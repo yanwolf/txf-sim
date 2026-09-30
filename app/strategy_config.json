@@ -119,7 +119,12 @@
       "TP_PCT": 1.2,
       "EXIT_OPP": 1,
       "ETD": 2,
-      "TNw": 330
+      "TNw": 330,
+      "USE_GAP": 0,
+      "GAP_DAYMODE": 1,
+      "GAP_MODE": 1,
+      "GAP_MIN": 0,
+      "GAP_DAYS": 0
     }
   },
   "Orbit_gap": {
