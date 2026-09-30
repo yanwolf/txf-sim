@@ -83,7 +83,8 @@ def max_bars():
 
 class Trade:
     __slots__ = ("strategy", "side", "entry_time", "entry_price", "entry_label",
-                 "exit_time", "exit_price", "exit_label", "pts", "net_pts", "bars_held", "mae", "mfe")
+                 "exit_time", "exit_price", "exit_label", "pts", "net_pts", "bars_held", "mae", "mfe",
+                 "vol20", "trend20")
 
     def __init__(self, strategy, side, t, price, label):
         self.strategy = strategy
@@ -96,6 +97,8 @@ class Trade:
         self.bars_held = 0
         self.mae = 0.0                # 最大不利幅度（點）
         self.mfe = 0.0                # 最大有利幅度（點）
+        self.vol20 = None             # 進場前 20 個完整日 K 的平均振幅 ÷ 收盤（%）：環境診斷用
+        self.trend20 = None           # 進場前 20 個完整日 K 的漲跌幅（%）
 
     def close(self, t, price, label, cost):
         self.exit_time, self.exit_price, self.exit_label = t, price, label
@@ -109,7 +112,7 @@ class Trade:
                 "exit_time": self.exit_time, "exit_price": round(self.exit_price, 1) if self.exit_price else None,
                 "exit_label": self.exit_label, "pts": round(self.pts, 1), "net_pts": round(self.net_pts, 1),
                 "money": round(self.net_pts * bpv), "mae": round(self.mae, 1), "mfe": round(self.mfe, 1),
-                "minutes": self.bars_held}
+                "minutes": self.bars_held, "vol20": self.vol20, "trend20": self.trend20}
 
 
 def _stats(trades, bpv, equity_curve, mdd_override=None):
@@ -183,7 +186,27 @@ def _groups(trades):
             o["win_rate"] = round(o["wins"] / o["trades"] * 100, 1)
         return rows
     side = lambda t: "多" if t.side > 0 else "空"
+
+    def vb(t):
+        v = t.vol20
+        if v is None: return "Z 無資料"
+        for lim, lab in ((0.8, "A <0.8%"), (1.1, "B 0.8～1.1%"), (1.5, "C 1.1～1.5%"), (2.0, "D 1.5～2.0%")):
+            if v < lim: return lab
+        return "E ≥2.0%"
+
+    def tb(t):
+        v = t.trend20
+        if v is None: return "Z 無資料"
+        for lim, lab in ((-5, "A 大跌 <−5%"), (-1, "B 跌 −5～−1%"), (1, "C 盤 −1～1%"), (5, "D 漲 1～5%")):
+            if v < lim: return lab
+        return "E 大漲 ≥5%"
+
+    period = lambda t: "2017～2023" if (t.entry_time or "")[:4] < "2024" else "2024～"
+    bykey = lambda rows: sorted(rows, key=lambda o: o["key"])
     return {
+        "by_vol": bykey(agg(vb)),
+        "by_vol_period": bykey(agg(lambda t: f"{vb(t)}｜{period(t)}")),
+        "by_trend_side": bykey(agg(lambda t: f"{tb(t)}｜{side(t)}")),
         "by_entry": agg(lambda t: f"{side(t)}｜{t.entry_label or '-'}"),
         "by_exit": agg(lambda t: f"{side(t)}｜{t.exit_label or '-'}"),
         "by_year": sorted(agg(lambda t: (t.exit_time or "")[:4]), key=lambda o: o["key"]),
@@ -458,6 +481,21 @@ class Backtester:
         eq_track = {"peak": 0.0, "mdd": 0.0, "from": None, "to": None, "peak_t": None}
         float_curve = []      # 每 N 根 1 分 K 取樣一次的浮動權益（含未實現）
 
+        # 環境診斷：只用「進場日曆日之前」已完整收盤的日 K，不偷看
+        import bisect as _bs
+        _rdays = [d for d in days if d["date"].weekday() < 5]   # 週五夜盤自成的「週六」那根振幅偏小，排除
+        _dkeys = [d["date"].isoformat() for d in _rdays]
+
+        def regime(ts):
+            i = _bs.bisect_left(_dkeys, ts[:10])      # days[:i] 的日期都 < 進場日曆日
+            if i < 21:
+                return None, None
+            win = _rdays[i - 20:i]
+            last = win[-1]["close"]
+            vol = sum(d["high"] - d["low"] for d in win) / 20 / last * 100
+            trend = (last / _rdays[i - 21]["close"] - 1) * 100
+            return round(vol, 2), round(trend, 2)
+
         def counted(ts):
             return stats_from is None or ts[:10] >= stats_from
 
@@ -474,7 +512,9 @@ class Backtester:
                     t = ot.close(ts, price, "反手", cost * 2)
                     if counted(t.entry_time):
                         trades.append(t); realized["v"] += t.net_pts
-                open_trade[s.name] = Trade(s.name, 1 if action == "buy" else -1, ts, price, label)
+                nt = Trade(s.name, 1 if action == "buy" else -1, ts, price, label)
+                nt.vol20, nt.trend20 = regime(ts)
+                open_trade[s.name] = nt
 
         for i, b in enumerate(m1):
             if i % 5000 == 0:

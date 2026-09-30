@@ -697,7 +697,10 @@ function groupTable(title,rows){
 }
 function groupBlock(g){
   if(!g)return '';
-  return groupTable('依年度',g.by_year)+groupTable('依進場原因',g.by_entry)+groupTable('依出場原因（淨＝扣成本後，毛＝未扣成本）',g.by_exit);
+  return groupTable('依年度',g.by_year)+groupTable('依進場原因',g.by_entry)+groupTable('依出場原因（淨＝扣成本後，毛＝未扣成本）',g.by_exit)+
+    groupTable('環境診斷：進場前 20 日平均日振幅（占指數 %）',g.by_vol)+
+    groupTable('環境診斷：波動度 × 期間（看 2017～2023 的同一波動區間是否也賺）',g.by_vol_period)+
+    groupTable('環境診斷：進場前 20 日漲跌 × 多空',g.by_trend_side);
 }
 function equitySVG(eq){
   if(!eq||eq.length<2)return '';

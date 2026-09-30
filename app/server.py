@@ -154,8 +154,8 @@ class Handler(BaseHTTPRequestHandler):
             if r is None:
                 self._send(404, {"error": "尚無回測結果"}); return
             cols = ["strategy", "side", "entry_time", "entry_price", "entry_label",
-                    "exit_time", "exit_price", "exit_label", "pts", "net_pts", "money", "mae", "mfe"]
-            head = "策略,方向,進場時間,進場價,進場原因,出場時間,出場價,出場原因,點數,淨點數,金額,MAE,MFE\n"
+                    "exit_time", "exit_price", "exit_label", "pts", "net_pts", "money", "mae", "mfe", "vol20", "trend20"]
+            head = "策略,方向,進場時間,進場價,進場原因,出場時間,出場價,出場原因,點數,淨點數,金額,MAE,MFE,進場前20日振幅%,進場前20日漲跌%\n"
             body = "".join(",".join(str(t.get(c, "")).replace(",", " ") for c in cols) + "\n" for t in r["trades"])
             data = ("\ufeff" + head + body).encode("utf-8")
             self.send_response(200)
