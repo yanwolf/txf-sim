@@ -101,8 +101,9 @@
     "lots": 1,
     "inputs": {
       "LADDER": 0,
-      "AVL_RESET": 0,
-      "OPENVOL": 0,
+      "AVL_RESET": 2,
+      "OPENVOL": 2000,
+      "OPENRULE": 0,
       "VOLN": 20,
       "VOLX": 2.0,
       "BODY": 0,

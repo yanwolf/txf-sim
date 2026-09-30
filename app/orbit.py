@@ -17,6 +17,7 @@
     成交量 ≥ 同類時段近 VOLN 根均量 × VOLX 的紅/黑 K，取其低點/高點當階梯
   大小流氓   ：MA1、MA2（30 分 K 的 20MA、40MA；40MA ≈ 60 分 K 的 20MA）
   公道伯 AVL ：成交量加權均價。AVL_RESET=0 結算日收盤後歸零；1 = 每月第一根；2 = 結算日當天開盤（含結算日）
+  OPENRULE   ：開盤法的判定。0 = 只看收盤；1 = 跳空確認（開盤與收盤都在前收同一側）
   OPENVOL    ：開盤法的量門檻，時段首根量未達此口數就不更新階梯（0 = 不限）
   DAYONLY=1  ：一般盤（只用日盤 K 計算大量與階梯）；0 = 合併盤
 """
@@ -89,7 +90,11 @@ class OrbitCalc:
         if use and int(p.get("LADDER", 0)) == 0:
             if b["session"] != self.cur_sess:            # 時段第一根
                 ref = self.ref_close
-                if ref is not None and v >= float(p.get("OPENVOL", 0)):
+                gap_ok = True
+                if ref is not None and int(p.get("OPENRULE", 0)) == 1:
+                    # 跳空確認：開盤與收盤要在前收同一側（開高收高、開低收低）才算
+                    gap_ok = (b["open"] > ref and b["close"] > ref) or (b["open"] < ref and b["close"] < ref)
+                if ref is not None and gap_ok and v >= float(p.get("OPENVOL", 0)):
                     if b["close"] > ref:
                         self.big = 1
                         self.long_ladder, self.long_ts = ref, b["ts"]

@@ -362,7 +362,7 @@ def _chart_data(q):
     cfg = PORTFOLIO.effective_config().get("Orbit_cost30", {})
     p = dict(OrbitCost30.inputs)
     p.update(cfg.get("inputs", {}))
-    for k in ("LADDER", "AVL_RESET", "OPENVOL", "VOLN", "VOLX", "BODY", "DAYONLY", "MA1", "MA2"):
+    for k in ("LADDER", "AVL_RESET", "OPENVOL", "OPENRULE", "VOLN", "VOLX", "BODY", "DAYONLY", "MA1", "MA2"):
         if g(k, "") != "":
             p[k] = float(g(k, ""))
     # 多抓 40 天讓公道伯、均量、均線暖機，畫圖時只回傳最後 days 天
