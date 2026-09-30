@@ -799,12 +799,11 @@ class Broker:
         self.persist()
 
     def _roll_day(self):
-        """跨交易日（夜盤 05:00 收後）重置今日損益與 kill（僅虧損上限造成的）。"""
+        """跨交易日重置今日損益與 kill（僅虧損上限造成的）。
+        交易日以期交所定義：15:00 起的夜盤屬於下一個交易日（夜盤＋隔天日盤＝同一天），
+        跟策略卡片的「今日」一致。舊版在 05:00 切日，會把夜盤的損益切掉。"""
         n = now()
-        if n.hour < 5:
-            day = (n.date().toordinal() - 1)
-        else:
-            day = n.date().toordinal()
+        day = n.date().toordinal() + (1 if n.hour >= 15 else 0)
         if self.day is None:
             self.day = day
             return

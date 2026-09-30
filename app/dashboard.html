@@ -340,13 +340,13 @@ async function tick(){
           <span class="badge ${x.mp>0?'mp-l':x.mp<0?'mp-s':''}">${x.mp>0?'多':x.mp<0?'空':'空手'}</span></div>
         <div class="stats num">
           <div><span>進場價</span>${x.entryprice?fmt(Math.round(x.entryprice)):'—'}</div>
-          <div><span>今日損益</span><b class="${cls(x.realized_today)}">${sgn(x.realized_today)}</b></div>
+          <div><span>今日損益</span><b class="${cls(x.realized_today)}">${sgn(x.realized_today)}</b>${(()=>{const u=(x.mp&&x.entryprice&&s.last_price)?Math.round((s.last_price-x.entryprice)*x.mp*x.lots):null;return u==null?'':`<div style="font-size:11px;font-weight:400">浮動 <span class="${cls(u)}">${sgn(u)}</span></div>`})()}</div>
           <div><span>最大浮盈</span>${x.mp?x.maxprofit_pts:'—'}</div>
           <div><span>今日進場</span>${x.entries_today}</div>
         </div>
         <div class="ord">${Object.keys(x.debug||{}).length?`<div id="dbgb-${x.name}" class="dbgbtn" onclick="toggleDbg('${x.name}')">${DBGOPEN.has(x.name)?'▼':'▶'} 計算過程</div><div class="dbg" id="dbg-${x.name}" style="display:${DBGOPEN.has(x.name)?'grid':'none'}">${Object.entries(x.debug).map(([k,v])=>`<div><span>${k}</span><b class="${v===true?'st-ok':v===false?'st-warn':''}">${typeof v==='boolean'?(v?'成立':'不成立'):Array.isArray(v)?v.map(n=>typeof n==='number'?fmt(n):n).join(typeof v[0]==='string'?'<br>':' / '):(typeof v==='number'?fmt(v):v)}</b></div>`).join('')}</div>`:''}${x.last_bar?'最後 K '+x.last_bar.slice(5)+'　':''}${(x.orders||[]).length?'掛單：'+(x.orders||[]).map(o=>`<b>${A[o.action]} ${K[o.kind]}${o.price?' '+fmt(Math.round(o.price)):''}</b>（${o.label}）`).join('、'):'無掛單'}</div>
       </div>`).join(''):'<div class="empty">'+(pf.busy||!pf.ready?'重播中…':'尚無策略')+'</div>')
-      +`<div class="netline">淨部位 ${pf.net>0?'多 ':pf.net<0?'空 ':''}${Math.abs(pf.net)||0} 口${pf.ready?'':'　·　歷史重播中'}</div>`;
+      +`<div class="netline">淨部位 ${pf.net>0?'多 ':pf.net<0?'空 ':''}${Math.abs(pf.net)||0} 口${pf.ready?'':'　·　歷史重播中'}<div style="font-size:11px;color:var(--dim);margin-top:2px">策略卡片以訊號價計算（同 MultiCharts）；上方帳戶損益以券商實際成交價計算，兩者差額是滑價</div></div>`;
     $('orders-h').textContent=sigMode?'委託與成交（訊號模式不會有）':'委託與成交';
 
     const stc={filled:'st-ok',failed:'st-bad',cancelled:'st-warn',sent:'st-warn',sending:'st-warn',unknown:''};
