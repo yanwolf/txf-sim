@@ -386,7 +386,7 @@ class OrbitCost30(Strategy):
     參數與 App 對照、校準方式見 orbit.py 註解。預設 paper 模式，不下單。
     """
     name = "Orbit_cost30"
-    version = "v1.2"          # v1.1：修正反手沿用舊停損；v1.2：加 USE_GAP 日 K 缺口發球權濾網（預設關）
+    version = "v1.3"          # v1.1 反手停損重設；v1.2 USE_GAP；v1.3 VOLSCALE（TOUCH/BUF/MAXLOSS 綁 30 分 K 波動度，預設關）
     desc = "軌道鞅 v1：30 分 K 大量紅黑 K 階梯（多空成本）+ 大小流氓濾網 + 公道伯，回測有守/頂底被破進場"
     minutes = 30
     doc = dict(LADDER="階梯算法：0=開盤法（對照 App）、1=量倍數法", AVL_RESET="公道伯歸零：0=結算日收盤後、1=每月、2=結算日開盤", OPENVOL="開盤法量門檻（口，0=不限）", OPENRULE="開盤法判定：0=只看收盤、1=跳空確認",
@@ -398,10 +398,14 @@ class OrbitCost30(Strategy):
                EXIT_OPP="1=反向大量 K 出場", ETD="每日最多進場次數", TNw="週六幾點後不留單（HHMM）",
                USE_GAP="日 K 缺口發球權濾網：0=不用、1=只順最近一次缺口方向（回補後仍算，直到反向缺口）、2=只在缺口未回補時",
                GAP_DAYMODE="缺口用的日 K：1=只用日盤、0=夜盤＋日盤合併", GAP_MODE="缺口定義：1=真缺口、2=實體缺口、3=開盤跳空",
-               GAP_MIN="缺口最小點數（0=不限）", GAP_DAYS="缺口有效日 K 數（0=不限，只影響 USE_GAP=2）")
+               GAP_MIN="缺口最小點數（0=不限）", GAP_DAYS="缺口有效日 K 數（0=不限，只影響 USE_GAP=2）",
+               VOLSCALE="0=TOUCH/BUF/MAXLOSS 用固定點數（舊）、1=改用 30 分 K 波動度 AR 的倍數",
+               VOL_N="AR＝最近幾根 30 分 K 的平均振幅（高−低）", K_TOUCH="VOLSCALE=1：TOUCH＝AR×此倍數",
+               K_BUF="VOLSCALE=1：BUF＝AR×此倍數", K_MAXLOSS="VOLSCALE=1：MAXLOSS＝AR×此倍數")
     inputs = dict(LADDER=0, AVL_RESET=2, OPENVOL=0, OPENRULE=1, VOLN=20, VOLX=2.0, BODY=0, DAYONLY=0, MA1=20, MA2=40, USE_AVL=1, SIDE=0, ENTRY=3,
                   TOUCH=20, BUF=10, MAXLOSS=150, TP_PCT=1.2, EXIT_OPP=1, ETD=2, TNw=330,
-                  USE_GAP=0, GAP_DAYMODE=1, GAP_MODE=1, GAP_MIN=0, GAP_DAYS=0)
+                  USE_GAP=0, GAP_DAYMODE=1, GAP_MODE=1, GAP_MIN=0, GAP_DAYS=0,
+                  VOLSCALE=0, VOL_N=200, K_TOUCH=0.5, K_BUF=0.25, K_MAXLOSS=3.0)
 
     def __init__(self, cfg):
         super().__init__(cfg)
@@ -410,6 +414,9 @@ class OrbitCost30(Strategy):
         p = self.p
         self.gt = GapTracker(p["GAP_DAYMODE"], p["GAP_MODE"], p["GAP_MIN"], p["GAP_DAYS"]) \
             if int(p.get("USE_GAP", 0)) else None
+        from collections import deque
+        self._rng = deque(maxlen=int(p.get("VOL_N", 200)))   # 30 分 K 振幅（VOLSCALE 用）
+        self._rng_sum = 0.0
         self.pos_stop = None
         self.pending_ref = None
         self.stop_moved = False                   # 只影響出場標籤（原始停損 vs 已移動），不影響行為
@@ -421,10 +428,23 @@ class OrbitCost30(Strategy):
             i -= 1
         for bb in self.bars[i + 1:]:
             c.update(bb, self.trading_days)
+            if len(self._rng) == self._rng.maxlen:
+                self._rng_sum -= self._rng[0]
+            r = bb["high"] - bb["low"]
+            self._rng.append(r)
+            self._rng_sum += r
         if c.ma2 is None:
             return
         b = self.bars[self._i]
         C, L, H = self.C(), self.L(), self.H()
+        touch, buf, maxloss = p["TOUCH"], p["BUF"], p["MAXLOSS"]
+        self.ar = None
+        if int(p.get("VOLSCALE", 0)) and len(self._rng) >= 20:
+            self.ar = self._rng_sum / len(self._rng)
+            touch = max(2.0, self.ar * float(p["K_TOUCH"]))
+            buf = max(1.0, self.ar * float(p["K_BUF"]))
+            maxloss = max(10.0, self.ar * float(p["K_MAXLOSS"]))
+        self.eff = (touch, buf, maxloss)
         side = int(p["SIDE"])
         entry = int(p["ENTRY"])
         day_ok = b["is_day"] or not int(p["DAYONLY"])
@@ -436,7 +456,7 @@ class OrbitCost30(Strategy):
         if self.gt is not None:                   # 日 K 缺口發球權：只順奇襲方向進場（只影響進場，不影響出場）
             self.gt.update(self.bars)
             if int(p["USE_GAP"]) == 2:
-                self.gt.check_fill(C, p["BUF"])
+                self.gt.check_fill(C, buf)
                 serve = self.gt.gap["dir"] if self.gt.gap else 0
             else:
                 serve = self.gt.last_dir
@@ -455,14 +475,14 @@ class OrbitCost30(Strategy):
         # ---- 進場
         can = day_ok and self.entries_today < p["ETD"]
         if can and self.mp <= 0 and side >= 0 and bull:
-            if entry in (1, 3) and c.long_ladder and L <= c.long_ladder + p["TOUCH"] and C > c.long_ladder:
+            if entry in (1, 3) and c.long_ladder and L <= c.long_ladder + touch and C > c.long_ladder:
                 self.pending_ref = c.long_ladder
                 self.buy_market("回測多方階梯有守")
             elif entry in (2, 3) and c.short_ladder and self.C(1) <= c.short_ladder < C and c.big != -1:
                 self.pending_ref = c.short_ladder
                 self.buy_market("大黑頂被破")
         if can and self.mp >= 0 and side <= 0 and bear:
-            if entry in (1, 3) and c.short_ladder and H >= c.short_ladder - p["TOUCH"] and C < c.short_ladder:
+            if entry in (1, 3) and c.short_ladder and H >= c.short_ladder - touch and C < c.short_ladder:
                 self.pending_ref = c.short_ladder
                 self.sellshort_market("回測空方階梯有守")
             elif entry in (2, 3) and c.long_ladder and self.C(1) >= c.long_ladder > C and c.big != 1:
@@ -472,10 +492,10 @@ class OrbitCost30(Strategy):
         # ---- 出場
         if self.mp > 0 and self.entryprice is not None:
             if self.pos_stop is None:
-                ref = self.pending_ref if self.pending_ref else self.entryprice - p["MAXLOSS"]
-                self.pos_stop = max(ref - p["BUF"], self.entryprice - p["MAXLOSS"])
-            if c.long_ladder and c.long_ladder < C and c.long_ladder - p["BUF"] > self.pos_stop:
-                self.pos_stop = c.long_ladder - p["BUF"]          # 停利點往上設
+                ref = self.pending_ref if self.pending_ref else self.entryprice - maxloss
+                self.pos_stop = max(ref - buf, self.entryprice - maxloss)
+            if c.long_ladder and c.long_ladder < C and c.long_ladder - buf > self.pos_stop:
+                self.pos_stop = c.long_ladder - buf          # 停利點往上設
                 self.stop_moved = True
             self.sell_stop(self.pos_stop, "階梯停損（已上移）" if self.stop_moved else "階梯停損（原始）")
             if p["TP_PCT"]:
@@ -484,10 +504,10 @@ class OrbitCost30(Strategy):
                 self.sell_market("空方大量出現")
         if self.mp < 0 and self.entryprice is not None:
             if self.pos_stop is None:
-                ref = self.pending_ref if self.pending_ref else self.entryprice + p["MAXLOSS"]
-                self.pos_stop = min(ref + p["BUF"], self.entryprice + p["MAXLOSS"])
-            if c.short_ladder and c.short_ladder > C and c.short_ladder + p["BUF"] < self.pos_stop:
-                self.pos_stop = c.short_ladder + p["BUF"]         # 停利點往下設
+                ref = self.pending_ref if self.pending_ref else self.entryprice + maxloss
+                self.pos_stop = min(ref + buf, self.entryprice + maxloss)
+            if c.short_ladder and c.short_ladder > C and c.short_ladder + buf < self.pos_stop:
+                self.pos_stop = c.short_ladder + buf         # 停利點往下設
                 self.stop_moved = True
             self.buytocover_stop(self.pos_stop, "階梯停損（已下移）" if self.stop_moved else "階梯停損（原始）")
             if p["TP_PCT"]:
@@ -508,6 +528,8 @@ class OrbitCost30(Strategy):
                 f"MA{int(self.p['MA1'])}": r1(c.ma1), f"MA{int(self.p['MA2'])}": r1(c.ma2),
                 "公道伯 AVL": r1(c.avl), "本根大量": {1: "紅", -1: "黑", 0: "否"}[c.big],
                 "持倉停損價": r1(self.pos_stop), "今日進場次數": self.entries_today,
+                "AR(30分K)": r1(getattr(self, "ar", None)),
+                "TOUCH/BUF/MAXLOSS": "/".join(str(r1(x)) for x in getattr(self, "eff", ())),
                 **({"缺口發球權": {1: "多", -1: "空", 0: "無"}[self.gt.last_dir],
                     "有效缺口": ({1: "多", -1: "空"}[self.gt.gap["dir"]] + f" 防守 {r1(self.gt.gap['def'])}") if self.gt.gap else "無"}
                    if self.gt is not None else {})}

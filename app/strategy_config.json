@@ -124,7 +124,12 @@
       "GAP_DAYMODE": 1,
       "GAP_MODE": 1,
       "GAP_MIN": 0,
-      "GAP_DAYS": 0
+      "GAP_DAYS": 0,
+      "VOLSCALE": 0,
+      "VOL_N": 200,
+      "K_TOUCH": 0.5,
+      "K_BUF": 0.25,
+      "K_MAXLOSS": 3.0
     }
   },
   "Orbit_gap": {
