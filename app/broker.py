@@ -197,6 +197,10 @@ class Broker:
         delta = target - pos
         if delta == 0:
             return
+        if abs(pos) > MAX_POSITION:
+            # 正常情況內部部位不可能超過上限；超過代表誤記了外來成交，送單只會放大錯誤
+            self._halt(f"內部部位 {pos} 超過上限 {MAX_POSITION}，疑似誤記外來成交，不送單；請先對帳")
+            return
         if MODE == "signal":
             self._virtual_fill(target, price)
             return
@@ -446,6 +450,15 @@ class Broker:
     def on_order_event(self, state, event):
         try:
             name = getattr(state, "name", str(state))
+            uname = str(name).upper()
+            short = uname.rsplit(".", 1)[-1]          # str(state) 可能是 "OrderState.StockDeal"
+            if "STOCK" in uname or "TFT" in uname or short.startswith("S"):
+                # 證券（整股／零股）回報：同帳戶會一起推過來，與期貨部位無關
+                if "DEAL" in uname:
+                    STATE.log("EVENT", f"證券成交回報（非期貨，已忽略）{self._get(event, 'code', default='')} "
+                                       f"{self._get(event, 'action', default='')} {self._get(event, 'quantity', default='')} "
+                                       f"@ {self._get(event, 'price', default='')}")
+                return
             if "Deal" in name:
                 self._on_deal(event)
             elif "Order" in name:
@@ -491,6 +504,10 @@ class Broker:
         qty = int(self._get(ev, "quantity", default=0) or 0)
         action = str(self._get(ev, "action", default=""))
         code = str(self._get(ev, "code", default=""))
+        root = (STATE.order_contract or "")[:3]
+        if root and code and not code.startswith(root):
+            STATE.log("EVENT", f"成交回報（非本程式商品 {code}，已忽略）{action} {qty} @ {price}")
+            return
         self._apply_fill(oid, seq, action, price, qty, code)
 
     def _find_order(self, oid, action=""):
@@ -512,6 +529,12 @@ class Broker:
                 return
             self._seen_deals.add(key)
             rec = self._find_order(oid, action)
+        if rec is None:
+            # 不是本程式送的委託（例如 App 手動下單）：不改內部部位，交給每分鐘對帳以券商為準
+            STATE.log("WARN", f"成交回報（非本程式委託 {oid}，已忽略）{code} {action} {qty} @ {price}")
+            notify(f"⚠️ 收到非本程式委託的成交回報：{code} {action} {qty} @ {price}（已忽略，交給對帳）",
+                   key="foreign_fill", cooldown=600)
+            return
         signed = qty if "Buy" in action else -qty
         with STATE.lock:
             pos, avg = STATE.position, STATE.position_price or price
