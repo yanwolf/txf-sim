@@ -371,7 +371,8 @@ class Backtester:
                     self._progress = val
                 elif kind == "result":
                     self.result = val
-                    history_add(val)
+                    if val.get("kind") != "levels":
+                        history_add(val)
                     self.progress = f"完成（{time.time() - t0:.1f} 秒）"
                     break
                 elif kind == "error":
@@ -443,6 +444,15 @@ class Backtester:
                     warm_used = warmup_days
         if len(m1) < 100:
             raise ValueError(f"資料不足（{len(m1)} 根 1 分 K），請確認日期區間或等待資料累積")
+
+        if params.get("mode") == "levels":            # 關卡守住率研究（不跑策略）
+            from . import levelstudy
+            def _pg(s):
+                self.progress = s
+            r = levelstudy.run(m1, stats_from, _pg)
+            r["params"] = {"run_at": STATE_now_str(), "source": source,
+                           "start": stats_from or m1[0]["ts"][:10], "end": m1[-1]["ts"][:10]}
+            return r
 
         # 建立策略實例（獨立於即時跑的那組）
         cfg = portfolio.effective_config()

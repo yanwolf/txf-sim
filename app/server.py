@@ -138,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
             r = BACKTEST.result
             if r is None:
                 self._send(200, {"empty": True}); return
-            if q.get("full", ["0"])[0] == "1":
+            if q.get("full", ["0"])[0] == "1" or r.get("kind") == "levels":
                 self._send(200, r); return
             light = {k: v for k, v in r.items() if k not in ("trades", "equity")}
             light["trades"] = r["trades"][-300:]

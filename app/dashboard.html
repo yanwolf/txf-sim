@@ -232,7 +232,7 @@
       <div class="desc" id="bt-cap" style="margin:2px 0"></div>
       <div class="row" id="bt-picks"></div>
       <div class="row"><label>備註 <input type="text" id="bt-note" maxlength="60" placeholder="例：ENTRY 3、關 EXIT_OPP" style="width:220px"></label></div>
-      <div class="row"><button class="primary" id="bt-run" onclick="runBT()">開始回測</button><span id="bt-msg" style="font-size:13px"></span></div>
+      <div class="row"><button class="primary" id="bt-run" onclick="runBT()">開始回測</button><button id="bt-lv" onclick="runLevels()" title="不跑策略，只統計 Orbit 階梯形成後的守住率（選擇權賣方研究）">關卡守住率研究</button><span id="bt-msg" style="font-size:13px"></span></div>
     </div>
     <div id="bt-out"></div>
     <div class="card" id="bt-hist-card"><h3>回測紀錄比較</h3>
@@ -630,6 +630,28 @@ async function runBT(){
   if(!r.ok){$('bt-msg').textContent='無法啟動（可能已在執行）';$('bt-run').disabled=false;return;}
   pollBT();
 }
+async function runLevels(){
+  $('bt-run').disabled=true; $('bt-msg').textContent='啟動中…';
+  const body={mode:'levels',start:$('bt-start').value,end:$('bt-end').value,warmup_days:$('bt-warm').value,source:$('bt-src').value};
+  const r=await fetch('/api/backtest/run',{method:'POST',headers:hdr(),body:JSON.stringify(body)});
+  if(!r.ok){$('bt-msg').textContent='無法啟動（可能已在執行）';$('bt-run').disabled=false;return;}
+  pollBT();
+}
+function renderLevels(r){
+  const p=r.params, pr=r.primary;
+  const pct=v=>v==null?'—':v.toFixed(1)+'%';
+  const df=(a,b)=>{const x=a-b;return `<span class="${x>=5?'up':(x<=-5?'down':'')}">${x>0?'+':''}${x.toFixed(1)}</span>`;};
+  const main=r.rows.filter(x=>x.H===pr.H&&x.X===pr.X);
+  const tbl=(rows,full)=>`<div class="scroll"><table><thead><tr><th>方向</th><th>事件</th><th>期間</th>${full?'<th>H</th><th>X</th>':''}<th>筆數</th><th>距離中位</th><th>收盤守住</th><th>基準</th><th>差</th><th>路徑守住</th><th>基準</th><th>差</th></tr></thead><tbody>
+    ${rows.map(x=>`<tr class="num"><td>${x.side}</td><td>${x.ctx}</td><td>${x.period}</td>${full?`<td>${x.H}</td><td>${x.X}%</td>`:''}<td>${x.n}</td><td>${pct(x.dist_med)}</td><td>${pct(x.close)}</td><td>${pct(x.close_base)}</td><td>${df(x.close,x.close_base)}</td><td>${pct(x.path)}</td><td>${pct(x.path_base)}</td><td>${df(x.path,x.path_base)}</td></tr>`).join('')}</tbody></table></div>`;
+  const vd=r.verdict.map(v=>`${v.side}方：2017～2023 ${v.diff_early==null?'—':(v.diff_early>0?'+':'')+v.diff_early}、2024～ ${v.diff_late==null?'—':(v.diff_late>0?'+':'')+v.diff_late} 個百分點 → ${v.pass?'<span class="st-gold">通過</span>':'未通過'}`).join('<br>');
+  $('bt-out').innerHTML=`<div class="card"><h3>關卡守住率研究</h3>
+    <div class="desc">${p.run_at||''} 執行　·　${srcName(p.source)}　·　${p.start} ~ ${p.end}　·　${M(r.bars30)} 根 30 分 K　·　階梯事件 ${M(r.events)} 個</div>
+    <div class="acc" style="padding:8px 12px;margin:8px 0">判定（收盤守住、${pr.H} 個交易日、緩衝 ${pr.X}%，實際 − 基準 兩段都 ≥ +5 才通過）：<br>${vd}<br><b>${r.passed?'關卡對選擇權賣方有參考價值，可以往下抓選擇權資料':'關卡守住率和同距離的任意價位差不多，不往下做'}</b></div>
+    <div class="desc">收盤守住＝第 H 個交易日收盤仍在 階梯∓X% 之內（看結算價）；路徑守住＝期間內從沒碰到。基準＝同期間每一根 K 當起點、同樣距離的守住率。</div>
+    <div class="desc" style="margin-top:10px">主要指標（H=${pr.H}、X=${pr.X}%）</div>${tbl(main,false)}
+    <div class="desc" style="margin-top:10px">全部組合</div>${tbl(r.rows,true)}</div>`;
+}
 async function pollBT(){
   const st=await fetch('/api/backtest/status',{headers:hdr()}).then(r=>r.json());
   $('bt-msg').textContent=st.error?('失敗：'+st.error):st.progress||'';
@@ -716,6 +738,7 @@ function equitySVG(eq){
 async function renderBT(){
   const r=await fetch('/api/backtest/result',{headers:hdr()}).then(x=>x.json());
   if(r.empty){$('bt-out').innerHTML='';return;}
+  if(r.kind==='levels'){renderLevels(r);return;}
   const p=r.params, c=r.combined;
   const names=Object.keys(r.per_strategy);
   $('bt-out').innerHTML=`
