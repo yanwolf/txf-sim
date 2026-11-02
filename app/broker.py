@@ -27,7 +27,11 @@ from .taifex_margin import MARGIN_TABLE
 MODE = os.getenv("MODE", "signal").lower()
 SIMULATION = os.getenv("SIMULATION", "true").lower() != "false"
 ENV_TAG = "sim" if SIMULATION else "live"
-KV_KEY = f"broker:{ENV_TAG}"      # 正式與模擬的部位/損益/kill 分開存，切換環境不會互相污染
+# 正式與模擬的部位/損益/kill 分開存，切換環境不會互相污染。
+# 訊號模式的虛擬部位另存 broker:signal：訊號模式不跑券商對帳，若共用正式環境的 key，
+# 正式環境殘留的錯誤部位或「策略已停」會被帶進來且無法自動清掉（2026-11-02 事件）。
+STORE_TAG = "signal" if MODE == "signal" else ENV_TAG
+KV_KEY = f"broker:{STORE_TAG}"
 LOTS = int(os.getenv("LOTS", "1"))
 MAX_POSITION = int(os.getenv("MAX_POSITION", "4"))
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT_PTS", "300"))   # 每口點數，0 = 關閉
@@ -104,7 +108,7 @@ class Broker:
     def restore(self):
         """從 DB 讀回部位與風控狀態（容器重啟用）。"""
         kv = DB_.get_kv(KV_KEY)
-        if kv is None and ENV_TAG == "sim":
+        if kv is None and STORE_TAG == "sim":
             kv = DB_.get_kv("broker")          # 舊版單一 key 只可能是模擬環境的資料
         kv = kv or {}
         with STATE.lock, self.lock:
@@ -129,9 +133,10 @@ class Broker:
             if o.get("broker_id"):
                 self.orders[o["broker_id"]] = o
         if kv:
-            STATE.log("INFO", f"從 DB 還原（{ENV_TAG}）：部位 {STATE.position} @ {STATE.position_price}，今日已實現 {STATE.realized_pnl}")
+            STATE.log("INFO", f"從 DB 還原（{STORE_TAG}）：部位 {STATE.position} @ {STATE.position_price}，今日已實現 {STATE.realized_pnl}")
         else:
-            STATE.log("INFO", f"{ENV_TAG} 環境無既有狀態，從零開始（部位以券商查詢為準）")
+            STATE.log("INFO", f"{STORE_TAG} 環境無既有狀態，從零開始" +
+                      ("（虛擬部位依策略淨部位對齊）" if STORE_TAG == "signal" else "（部位以券商查詢為準）"))
 
     def persist(self):
         with STATE.lock, self.lock:
