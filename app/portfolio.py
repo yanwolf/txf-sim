@@ -225,6 +225,12 @@ class Portfolio:
                     with STATE.lock:
                         pos, kill, halted, pending = STATE.position, STATE.kill, STATE.strategy_halted, STATE.pending_order
                     net = self.net()
+                    if BROKER.no_chase:
+                        # 停止新進場剛解除：策略被擋的那筆若還在場內，不半路追，等下一個新訊號
+                        BROKER.no_chase = False
+                        if pos != net:
+                            self._baseline_net = net
+                            STATE.log("INFO", f"停止新進場已解除：策略淨部位 {net}、帳戶 {pos}，不追單，等下一個新訊號")
                     if self._baseline_net is not None and net == self._baseline_net:
                         pass                        # 開機時就有的部位，照設定不追
                     elif BROKER.ready and not kill and not halted and not pending and pos != net:

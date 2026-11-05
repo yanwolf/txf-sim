@@ -317,7 +317,7 @@ async function tick(){
     $('usage').textContent=s.usage?`${s.usage.bytes_mb} / ${s.usage.limit_mb} MB · ${s.usage.connections}`:'—';
     $('logins').textContent=`${s.login_count}（${s.last_login_at?s.last_login_at.slice(11,19):'—'}）`;
     $('deliv').textContent=s.contract?s.contract.delivery_date:'—';
-    $('btn-kill').disabled=s.kill; $('btn-resume').disabled=!(s.kill||s.strategy_halted);
+    $('btn-kill').disabled=s.kill; $('btn-resume').disabled=!(s.kill||s.strategy_halted||s.entry_block);
     $('btn-flat').disabled=!s.position;
     $('btn-adopt').disabled=!(s.reconcile_ok===false&&s.broker_position!=null);
 
@@ -326,6 +326,7 @@ async function tick(){
     if(s.in_session&&s.tick_age_sec!=null&&s.tick_age_sec>180){msgs.push(`盤中已 ${Math.round(s.tick_age_sec/60)} 分鐘沒有行情`);bad=true;}
     if(s.kill){msgs.push('kill switch 開啟：'+(s.kill_reason||''));bad=true;}
     if(s.strategy_halted){msgs.push('策略已停止：'+s.strategy_halted);bad=true;}
+    if(s.entry_block) msgs.push('停止新進場：'+s.entry_block+'（手上部位照策略出場，下個交易日自動解除）');
     if(s.reconcile_ok===false&&s.mismatch_min>=3){msgs.push('內部部位與券商不一致已 '+s.mismatch_min+' 分鐘，確認後可按「以券商為準」');bad=true;}
     if(s.pending_order) msgs.push('委託 '+s.pending_order+' 進行中');
     if(s.last_login_error) msgs.push('登入失敗：'+s.last_login_error);

@@ -35,6 +35,12 @@ KV_KEY = f"broker:{STORE_TAG}"
 LOTS = int(os.getenv("LOTS", "1"))
 MAX_POSITION = int(os.getenv("MAX_POSITION", "4"))
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT_PTS", "300"))   # 每口點數，0 = 關閉
+# 達到單日虧損上限時怎麼做：
+#   entry   = 不動手上部位，讓策略自己的出場/停損走完；之後的「新進場」才擋（預設）
+#   flatten = 舊行為：一碰到就 kill + 市價平倉
+DAILY_LOSS_MODE = os.getenv("DAILY_LOSS_MODE", "entry").lower()
+# entry 模式下的最後保險：今日損益（已實現＋未實現）跌破這個點數仍會 kill + 平倉；0 = 不設
+DAILY_LOSS_HARD_PTS = float(os.getenv("DAILY_LOSS_HARD_PTS", "0"))
 ORDER_TIMEOUT = int(os.getenv("ORDER_TIMEOUT", "15"))
 MAX_ORDER_FAILURES = int(os.getenv("MAX_ORDER_FAILURES", "2"))
 FLAT_AT_DAY_CLOSE = os.getenv("FLAT_AT_DAY_CLOSE", "false").lower() == "true"
@@ -92,6 +98,8 @@ class Broker:
         self._last_reconcile = 0.0
         self._mismatch_streak = 0
         self._deferred = None      # pending 時來的新目標，成交後補送
+        self._block_logged = None  # 停止新進場時，同一個目標只記一次 log
+        self.no_chase = False      # 停止新進場解除後，portfolio 不追策略手上的舊部位
         self.ready = False         # 下單層就緒且已完成啟動對帳
         self._last_fill_ts = 0.0
         self.contract_lookup = None   # engine 注入：代碼 → 合約物件
@@ -119,6 +127,7 @@ class Broker:
             STATE.kill = bool(kv.get("kill", False))
             STATE.kill_reason = kv.get("kill_reason")
             STATE.strategy_halted = kv.get("strategy_halted")
+            STATE.entry_block = kv.get("entry_block")
             self.failures = int(kv.get("failures", 0))
             self.day = kv.get("day")
             self._seen_deals = set(kv.get("seen_deals", []))
@@ -145,6 +154,7 @@ class Broker:
                 "realized_pnl": STATE.realized_pnl, "virtual_pnl": STATE.virtual_pnl,
                 "kill": STATE.kill, "kill_reason": STATE.kill_reason,
                 "strategy_halted": STATE.strategy_halted,
+                "entry_block": STATE.entry_block,
                 "failures": self.failures, "day": self.day,
                 "seen_deals": list(self._seen_deals)[-200:],
             })
@@ -199,6 +209,7 @@ class Broker:
             if STATE.strategy_halted:
                 STATE.log("WARN", f"策略已停（{STATE.strategy_halted}），忽略 {reason}（目標 {target}）")
                 return
+        target = self._entry_gate(pos, target, price, reason)
         delta = target - pos
         if delta == 0:
             return
@@ -219,6 +230,34 @@ class Broker:
         else:
             oc = "Cover" if (pos != 0 and abs(target) < abs(pos) and (target == 0 or (target > 0) == (pos > 0))) else "Auto"
             self._place(delta, price, reason, octype=oc)
+
+    def _entry_gate(self, pos, target, price, reason):
+        """DAILY_LOSS_MODE=entry：今日虧損達上限後，只放行「減碼／平倉」，擋掉新進場、加碼、反手的新倉。
+        判斷用的是這筆單送出當下的今日損益（已實現＋手上部位若平掉的損益），
+        所以策略自己的出場照常執行，出場後下一次要進場時才擋。"""
+        if DAILY_LOSS_MODE != "entry" or DAILY_LOSS_LIMIT <= 0:
+            return target
+        opens = target != 0 and (pos == 0 or (target > 0) != (pos > 0) or abs(target) > abs(pos))
+        if not opens:
+            return target
+        with STATE.lock:
+            realized, avg, blocked = STATE.realized_pnl, STATE.position_price, STATE.entry_block
+        unreal = (price - avg) * pos if (pos and avg is not None and price is not None) else 0.0
+        day_pts = (realized + unreal) / max(1, LOTS)
+        if not blocked and day_pts > -DAILY_LOSS_LIMIT:
+            return target
+        allowed = 0 if (pos != 0 and (target > 0) != (pos > 0)) else pos   # 反手只做平倉那一半；加碼/新倉不做
+        if not blocked:
+            msg = f"今日虧損 {day_pts:.0f} 點已達上限 {DAILY_LOSS_LIMIT:.0f}，今天不再新進場"
+            with STATE.lock:
+                STATE.entry_block = msg
+            STATE.log("WARN", msg + f"（擋下：{reason}，目標 {target}）")
+            notify(f"⛔ {msg}\n擋下：{reason}", key="entry_block", cooldown=3600)
+            self.persist()
+        elif self._block_logged != (target, reason):
+            STATE.log("INFO", f"今日已停止新進場，略過：{reason}（目標 {target} → {allowed}）")
+        self._block_logged = (target, reason)
+        return allowed
 
     def _startup_reconcile(self):
         """開機對帳：券商是唯一真相，開機時一律採用券商部位（不受 RECONCILE_ADOPT 影響）。
@@ -665,11 +704,15 @@ class Broker:
         with STATE.lock:
             pos, avg = STATE.position, STATE.position_price
             realized, kill = STATE.realized_pnl, STATE.kill
-        if pos and avg is not None and DAILY_LOSS_LIMIT > 0 and not kill:
+        if pos and avg is not None and not kill:
             unreal = (price - avg) * pos
-            if realized / max(1, LOTS) + unreal / max(1, abs(pos)) <= -DAILY_LOSS_LIMIT:
+            day_pts = realized / max(1, LOTS) + unreal / max(1, abs(pos))
+            if DAILY_LOSS_MODE == "flatten" and DAILY_LOSS_LIMIT > 0 and day_pts <= -DAILY_LOSS_LIMIT:
                 self.kill(f"單日虧損達 {DAILY_LOSS_LIMIT} 點")
                 self.flatten("單日虧損上限")
+            elif DAILY_LOSS_MODE != "flatten" and DAILY_LOSS_HARD_PTS > 0 and day_pts <= -DAILY_LOSS_HARD_PTS:
+                self.kill(f"單日虧損達硬上限 {DAILY_LOSS_HARD_PTS:.0f} 點")
+                self.flatten("單日虧損硬上限")
         if FLAT_AT_DAY_CLOSE and pos:
             n = now()
             if n.hour == 13 and n.minute == 44 and n.second >= 20:
@@ -841,7 +884,11 @@ class Broker:
                 STATE.realized_pnl = 0.0
                 if STATE.kill and STATE.kill_reason and "單日虧損" in STATE.kill_reason:
                     STATE.kill, STATE.kill_reason = False, None
-            STATE.log("INFO", "新交易日，今日損益歸零")
+                had_block, STATE.entry_block = STATE.entry_block, None
+            if had_block:
+                self.no_chase = True     # 策略昨天被擋的那筆若還在場內，不在半路追進
+                self._block_logged = None
+            STATE.log("INFO", "新交易日，今日損益歸零" + ("，解除停止新進場（不追場內舊部位，等下一個新訊號）" if had_block else ""))
             self.persist()
 
     # ------------------------------------------------------------ 手動操作
@@ -856,8 +903,12 @@ class Broker:
         with STATE.lock:
             STATE.kill, STATE.kill_reason = False, None
             STATE.strategy_halted = None
+            had_block, STATE.entry_block = STATE.entry_block, None
+        if had_block:
+            self.no_chase = True
+            self._block_logged = None
         self.failures = 0
-        STATE.log("INFO", "已恢復（kill 關閉、策略停止解除、失敗計數歸零）")
+        STATE.log("INFO", "已恢復（kill 關閉、策略停止解除、停止新進場解除、失敗計數歸零）")
         self.persist()
 
     def flatten(self, reason="手動平倉"):

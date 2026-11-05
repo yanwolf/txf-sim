@@ -83,6 +83,7 @@ class State:
         self.kill = False
         self.kill_reason = None
         self.strategy_halted = None
+        self.entry_block = None       # 單日虧損達上限後「停止新進場」的原因（DAILY_LOSS_MODE=entry）
         self.orders = deque(maxlen=100)
         self.db = None
 
@@ -154,6 +155,8 @@ class State:
                 "kill": self.kill,
                 "kill_reason": self.kill_reason,
                 "strategy_halted": self.strategy_halted,
+                "entry_block": self.entry_block,
+                "daily_loss_mode": __import__("app.broker", fromlist=["DAILY_LOSS_MODE"]).DAILY_LOSS_MODE,
                 "db": self.db,
                 "telegram": __import__("app.notify", fromlist=["enabled"]).enabled(),
                 "portfolio": __import__("app.portfolio", fromlist=["PORTFOLIO"]).PORTFOLIO.snapshot(),
