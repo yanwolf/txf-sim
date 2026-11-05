@@ -150,8 +150,8 @@
       <div class="cell"><span class="k">行情訂閱</span><div class="v"><i class="dot" id="d-sub"></i><span id="sub">—</span></div></div>
       <div class="cell"><span class="k">交易時段</span><div class="v" id="sess">—</div></div>
       <div class="cell"><span class="k">Tick 數 / 最後一筆</span><div class="v num" id="ticks">—</div></div>
-      <div class="cell"><span class="k">今日 開 / 高 / 低</span><div class="v num" id="ohl">—</div></div>
-      <div class="cell"><span class="k">今日量</span><div class="v num" id="vol">—</div></div>
+      <div class="cell"><span class="k" id="ohl-k">本盤 開 / 高 / 低</span><div class="v num" id="ohl">—</div></div>
+      <div class="cell"><span class="k" id="vol-k">本盤量</span><div class="v num" id="vol">—</div></div>
       <div class="cell"><span class="k" id="pos-label">部位</span><div class="v num" id="pos">—</div></div>
       <div class="cell"><span class="k">今日損益（已實現 + 未實現）</span><div class="v num" id="pnl">—</div></div>
       <div class="cell"><span class="k">券商部位 / 對帳</span><div class="v num" id="bpos">—</div></div>
@@ -302,6 +302,8 @@ async function tick(){
     $('ticks').textContent=`${fmt(s.tick_count)} / ${s.last_tick_at||'—'}`;
     $('ohl').textContent=s.day_open==null?'—':`${fmt(s.day_open)} / ${fmt(s.day_high)} / ${fmt(s.day_low)}`;
     $('vol').textContent=fmt(s.day_volume);
+    const sk=s.session_ref_key||'', sn=sk.endsWith('N')?'夜盤':sk.endsWith('D')?'日盤':'本盤';
+    $('ohl-k').textContent=sn+' 開 / 高 / 低'; $('vol-k').textContent=sn+'量';
     $('bars').textContent=`${fmt(s.bar_count)}（${fmt(s.warmup_bars)}）`;
     const sigMode=s.mode==='signal';
     const posTxt=s.position>0?'多 '+s.position:s.position<0?'空 '+(-s.position):'無';

@@ -56,7 +56,8 @@ class State:
         self.last_tick_ts = 0.0       # epoch, 給 watchdog 用
         self.last_price = None
         self.prev_close = None        # 前一日收盤（暖機資料最後一根）
-        self.day_open = None
+        self.day_open = None          # 本時段（日盤或夜盤）開盤
+        self.session_ref_key = None   # prev_close 是哪個時段的漲跌基準
         self.day_high = None
         self.day_low = None
         self.day_volume = 0
@@ -134,6 +135,7 @@ class State:
                 "tick_age_sec": round(time.time() - self.last_tick_ts) if self.last_tick_ts else None,
                 "last_price": self.last_price,
                 "prev_close": self.prev_close,
+                "session_ref_key": self.session_ref_key,
                 "change": change,
                 "day_open": self.day_open,
                 "day_high": self.day_high,

@@ -8,7 +8,7 @@ import base64
 import shioaji as sj
 
 from .portfolio import PORTFOLIO
-from .tf import session_of as tf_session_of
+from .tf import session_of as tf_session_of, parse_ts as _parse_ts
 from .broker import BROKER, MODE
 from .db import DB_
 from .notify import notify
@@ -53,7 +53,8 @@ class Engine:
         self._data_code = None             # 行情實際訂閱的月合約代碼
         self._usage_fail = 0
         self._legacy = False
-        self._day = None
+        self._day = None                   # 目前開高低量所屬的時段 key（例如 2026-11-05N）
+        self._ref_day = None               # 合約檔 reference（前一日結算價）是哪一天載入的
 
     # ------------------------------------------------------------ 連線
     def start(self):
@@ -298,7 +299,12 @@ class Engine:
                     "limit_down": num(g("limit_down")),
                 }
                 if STATE.contract["reference"]:
-                    STATE.prev_close = STATE.contract["reference"]
+                    n_ = now()
+                    # 合約檔約 07:00 後才換成前一日結算價；凌晨夜盤登入拿到的 reference 不拿來當當天日盤基準
+                    self._ref_day = n_.date().isoformat() if n_.hour >= 7 else None
+                    if not STATE.prev_close:
+                        STATE.prev_close = STATE.contract["reference"]
+                self._day = None               # 換合約／重登後，下一筆 tick 重新決定本時段基準
             STATE.log("INFO", f"合約：{g('code')} {g('name', '')} 結算日 {g('delivery_date', '')}")
         except Exception as e:
             self.contract = None
@@ -423,10 +429,11 @@ class Engine:
                 STATE.last_tick_at = dt.strftime("%H:%M:%S")
                 STATE.last_tick_ts = time.time()
                 STATE.last_price = price
-                d = dt.date()
-                if self._day != d:
-                    self._day = d
-                    STATE.day_open, STATE.day_high, STATE.day_low, STATE.day_volume = price, price, price, 0
+                key = _ses[0] if _ses else None
+                if key and self._day != key:
+                    # 日盤、夜盤各自一段：開高低量從該時段第一筆算起，漲跌基準換成上一段的收盤
+                    self._day = key
+                    self._start_session(key, price)
                 STATE.day_high = max(STATE.day_high, price)
                 STATE.day_low = min(STATE.day_low, price)
                 STATE.day_volume += vol
@@ -438,6 +445,38 @@ class Engine:
             BROKER.on_tick(price)
         except Exception as e:
             STATE.log("ERROR", f"tick 處理錯誤：{e!r}")
+
+    def _start_session(self, key, price):
+        """（呼叫時已持有 STATE.lock）新時段開始：
+        - 開/高/低/量：本時段已有的 1 分 K 先帶入（重啟後不會從半路算起），否則從這筆 tick 起算
+        - 漲跌基準：夜盤 = 同一天日盤收盤；日盤 = 前一個日盤的結算價（合約檔 reference，當天登入才可信），
+          沒有就用前一個日盤收盤。跟期交所/券商 App 的「昨收」一致，夜盤不再拿前一日結算價來比。"""
+        # 從最新往回掃：先收本時段的 K，再找上一個日盤的最後一根，找到就停（不掃整個 8 萬根）
+        cur, prev_day_close = [], None
+        for b in reversed(STATE.bars):
+            k = (tf_session_of(_parse_ts(b["ts"])) or ("",))[0]
+            if k == key:
+                cur.append(b)
+            elif k.endswith("D") and k < key:
+                prev_day_close = b["close"]
+                break
+        cur.reverse()
+        if cur:
+            STATE.day_open = cur[0]["open"]
+            STATE.day_high = max(max(b["high"] for b in cur), price)
+            STATE.day_low = min(min(b["low"] for b in cur), price)
+            STATE.day_volume = sum(b["volume"] for b in cur)
+        else:
+            STATE.day_open, STATE.day_high, STATE.day_low, STATE.day_volume = price, price, price, 0
+        ref = None
+        is_day = key.endswith("D")
+        if is_day and STATE.contract and STATE.contract.get("reference") and self._ref_day == key[:10]:
+            ref = STATE.contract["reference"]
+        if ref is None:
+            ref = prev_day_close
+        if ref:
+            STATE.prev_close = ref
+        STATE.session_ref_key = key
 
     def _aggregate(self, dt, price, vol):
         minute = _norm_minute(dt.replace(tzinfo=None)).strftime("%Y-%m-%d %H:%M")
