@@ -18,7 +18,8 @@
       "BTB": 100,
       "SMax": 100,
       "STB": 150,
-      "TNw": 330
+      "TNw": 330,
+      "EBX": 0
     }
   },
   "AR_crossover_2025": {

@@ -77,6 +77,10 @@ class Strategy:
         self.orders = []          # 目前 K 棒有效的掛單
         self.exit_on_close = False
         self.filled_this_bar = False
+        # 進場 K 災難停損（EBX）：EL 的停損要等收盤才掛，進場那根 K 沒保護；
+        # EBX>0 時進場成交當下掛一張 AvgRange(200)×EBX 的觸價停損，只在進場那根 K 有效
+        self.ebx_dist = None      # 上一根收盤算好的距離（點）
+        self.ebx_stop = None      # 目前生效的災難停損價
         # 資料
         self.bars = []
         self.sessions = []
@@ -252,6 +256,9 @@ class Strategy:
         self.orders = []
         self.exit_on_close = False
         self.filled_this_bar = False
+        self.ebx_stop = None      # 進場那根結束，交回策略自己的停損
+        ebx = float(self.p.get("EBX", 0) or 0)
+        self.ebx_dist = self.avgrange(200) * ebx if ebx > 0 and len(bars) >= 2 else None
         if self.enabled:
             try:
                 self.on_bar()
@@ -298,6 +305,15 @@ class Strategy:
             self.maxprofit_pts = max(self.maxprofit_pts, price - self.entryprice)
         elif self.mp < 0 and self.entryprice is not None:
             self.maxprofit_pts = max(self.maxprofit_pts, self.entryprice - price)
+        if self.ebx_stop is not None and self.mp != 0:
+            hit = price >= self.ebx_stop if self.mp < 0 else price <= self.ebx_stop
+            if hit:
+                action = "buytocover" if self.mp < 0 else "sell"
+                fill = self.ebx_stop
+                self._apply(action, fill)
+                self.ebx_stop = None
+                self.orders = []
+                return (action, fill, "進場K災難停損")
         if self.filled_this_bar or not self.orders:
             return None
         for o in self.orders:
@@ -316,6 +332,8 @@ class Strategy:
                 self._apply(o.action, fill)
                 self.filled_this_bar = True
                 self.orders = []
+                if o.action in ("buy", "sellshort") and self.ebx_dist:
+                    self.ebx_stop = fill - self.ebx_dist if self.mp > 0 else fill + self.ebx_dist
                 return (o.action, fill, o.label)
         return None
 
@@ -385,7 +403,10 @@ class Strategy:
                 "trades_today": self.trades_today, "last_bar": self.last_bar_ts, "last_signal": self.last_signal,
                 "exit_on_close": self.exit_on_close, "bars": len(self.bars),
                 "orders": [{"kind": o.kind, "action": o.action, "price": o.price, "label": o.label}
-                           for o in self.orders if self._valid(o)],
+                           for o in self.orders if self._valid(o)]
+                          + ([{"kind": "stop", "action": "buytocover" if self.mp < 0 else "sell",
+                               "price": self.ebx_stop, "label": "進場K災難停損"}]
+                             if self.ebx_stop is not None and self.mp != 0 else []),
                 "inputs": self.p, "doc": self.doc, "desc": self.desc,
                 "debug": self._safe_debug()}
 

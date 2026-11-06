@@ -16,9 +16,10 @@ class TMFF(Strategy):
                SWing="SwingHigh/Low 左右各幾根", BLOSS="多單停損點數", BWIN="多單停利點數",
                SLOSS="空單停損點數", SWIN="空單停利點數", BMax="多單啟動移動停利的最大浮盈",
                BTB="多單移動停利回吐點數", SMax="空單啟動移動停利的最大浮盈", STB="空單移動停利回吐點數",
-               TNw="週六幾點後不留單（HHMM）")
+               TNw="週六幾點後不留單（HHMM）",
+               EBX="進場K災難停損：AvgRange(200) 的倍數，只在進場那根 K 有效（0 = 關閉，與 MC 一致）")
     inputs = dict(N=5, BB=50, SS=50, SWing=3, BLOSS=40, BWIN=500, SLOSS=40, SWIN=500,
-                  BMax=50, BTB=100, SMax=50, STB=100, TNw=430)
+                  BMax=50, BTB=100, SMax=50, STB=100, TNw=430, EBX=0)
 
     def __init__(self, cfg):
         super().__init__(cfg)
@@ -672,3 +673,9 @@ class DemoMA(Strategy):
 
 REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, ARCrossunder2025, GuYuan2024, GuYuan2025,
                                   OrbitCost30, OrbitGap, DemoMA)}
+
+# 進場 K 災難停損（EBX）是 el.Strategy 的共用機制：每支策略都加這個參數，預設 0＝關閉、行為與 MC 一致。
+# AvgRange(200) 依各策略自己的 K 棒週期計算（20 分 K 的 AR 比 60 分 K 小，倍數會自動對應）。
+for _c in REGISTRY.values():
+    _c.inputs = {**_c.inputs, "EBX": _c.inputs.get("EBX", 0)}
+    _c.doc = {**_c.doc, "EBX": _c.doc.get("EBX", "進場K災難停損：AvgRange(200) 的倍數，只在進場那根 K 有效（0 = 關閉，與 MC 一致）")}
