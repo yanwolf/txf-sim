@@ -76,9 +76,46 @@
       "TNw": 330
     }
   },
+  "GuYuan_2024_S": {
+    "enabled": false,
+    "mode": "paper",
+    "minutes": 60,
+    "lots": 1,
+    "inputs": {
+      "N1": 3,
+      "N2": 3,
+      "N3": 5,
+      "HH": 10,
+      "LL": 10,
+      "LOSS": 100,
+      "WIN": 400,
+      "Twin": 30,
+      "Tstop": 300,
+      "TNw": 330
+    }
+  },
   "GuYuan_2025": {
     "enabled": true,
     "mode": "live",
+    "minutes": 20,
+    "lots": 1,
+    "inputs": {
+      "HN": 25,
+      "N1": 0,
+      "N2": 3,
+      "N3": 50,
+      "MA1": 45,
+      "MA2": 175,
+      "ETD": 5,
+      "TN": 1325,
+      "LOSS": 50,
+      "WIN": 325,
+      "TNw": 430
+    }
+  },
+  "GuYuan_2025_S": {
+    "enabled": false,
+    "mode": "paper",
     "minutes": 20,
     "lots": 1,
     "inputs": {

@@ -262,6 +262,105 @@ class GuYuan2025(Strategy):
                 "今日進場次數": self.entries_today, "結算日": self.checkday}
 
 
+class GuYuan2024Short(Strategy):
+    """GuYuan_2024 的空方鏡像：週低/時段收/區間中值合成價，L 跌破 → N 根最低 stop 放空；H 站上 → N 根最高 stop 回補。
+
+    與多方版完全對稱：進場用 value2（週低版合成價）、出場用 value1（週高版合成價），停損、停利、移動停利、
+    結算日與週末出場都反向。台股長期偏多，空方鏡像的期望值通常低於多方，建議先用 paper 模式累積樣本再決定。
+    """
+    name = "GuYuan_2024_S"
+    desc = "只做空。(週低+時段收+區間中值)/3 合成價位，L 跌破 → N 根最低 stop 放空；H 站上 → N 根最高 stop 回補（GuYuan_2024 的鏡像）"
+    minutes = 60
+    doc = dict(N1="幾週前的週高/週低", N2="幾個時段前的收盤", N3="區間中值的期數", LL="進場：幾根最低價",
+               HH="出場：幾根最高價", LOSS="停損點數", WIN="停利點數", Twin="啟動移動停利的最大浮盈",
+               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）")
+    inputs = dict(N1=1, N2=1, N3=1, HH=10, LL=10, LOSS=50, WIN=250, Twin=50, Tstop=200, TNw=430)
+
+    def _values(self):
+        p = self.p
+        mid = (self.highest(self.C, p["N3"]) + self.lowest(self.C, p["N3"])) * 0.5
+        value1 = (self.highW(p["N1"]) + self.closeS(p["N2"]) + mid) / 3
+        value2 = (self.lowW(p["N1"]) + self.closeS(p["N2"]) + mid) / 3
+        return mid, value1, value2
+
+    def on_bar(self):
+        p = self.p
+        _, value1, value2 = self._values()
+
+        # 鏡像：IF MP<>-1 and L<value2 then sellshort next bar at lowest(L,LL) stop;
+        if self.mp != -1 and self.L() < value2:
+            self.sellshort_stop(self.lowest(self.L, p["LL"]), "N 根最低跌破")
+        # 鏡像：IF MP=-1 and H>value1 then buytocover next bar at highest(H,HH) stop;
+        if self.mp == -1 and self.H() > value1:
+            self.buytocover_stop(self.highest(self.H, p["HH"]), "N 根最高突破")
+
+        if self.mp < 0:
+            self.buytocover_stop(self.entryprice + TICKSIZE * p["LOSS"], "停損")
+            self.buytocover_limit(self.entryprice - TICKSIZE * p["WIN"], "停利")
+
+        v1 = self.maxprofit_pts
+        if self.mp < 0 and v1 > p["Twin"] * TICKSIZE:
+            self.buytocover_stop(self.entryprice - v1 + p["Tstop"] * TICKSIZE, "移動停利")
+
+        if self.checkday:
+            self.setexitonclose()
+        if self.weekend_exit_due(p["TNw"]):
+            self.exit_market("週末出場")
+
+    def debug(self):
+        p = self.p
+        mid, v1, v2 = self._values()
+        return {"最高價": self.H(), "最低價": self.L(), f"週高({int(p['N1'])})": self.highW(p["N1"]),
+                f"週低({int(p['N1'])})": self.lowW(p["N1"]), f"時段收({int(p['N2'])})": self.closeS(p["N2"]),
+                "區間中值": mid, "進場價 value2": v2, "出場價 value1": v1,
+                f"最低({int(p['LL'])}根)": self.lowest(self.L, p["LL"]), f"最高({int(p['HH'])}根)": self.highest(self.H, p["HH"]),
+                "結算日": self.checkday}
+
+
+class GuYuan2025Short(Strategy):
+    """GuYuan_2025 的空方鏡像：20 分 K，週低版合成價 + 均線空頭排列（MA1<MA2），N 根最低 stop 放空。"""
+    name = "GuYuan_2025_S"
+    desc = "只做空。週低版合成價位 + 均線空頭排列（MA1<MA2），N 根最低 stop 放空，每日最多 ETD 次（GuYuan_2025 的鏡像）"
+    minutes = 20
+    doc = dict(HN="進場：幾根最低價", N1="幾週前的週低（0=本週）", N2="幾天前的日收盤（0=今天）",
+               N3="區間中值的期數", MA1="短均線期數", MA2="長均線期數", ETD="每日最多進場次數",
+               TN="結算日幾點出場（HHMM）", LOSS="停損點數", WIN="停利點數", TNw="週六幾點後不留單（HHMM）")
+    inputs = dict(HN=20, N1=0, N2=0, N3=0, MA1=1, MA2=1, ETD=5, TN=1325, LOSS=100, WIN=500, TNw=430)
+
+    def _value(self):
+        p = self.p
+        mid = (self.highest(self.C, p["N3"]) + self.lowest(self.C, p["N3"])) * 0.5
+        return mid, (self.lowW(p["N1"]) + self.closeD(p["N2"]) + mid) / 3
+
+    def on_bar(self):
+        p = self.p
+        _, value2 = self._value()
+
+        # 鏡像：IF MP<>-1 and EntriesToday<ETD and L<value2 and MA(ma1)<MA(ma2) and ma1<ma2 then sellshort lowest(L,HN) stop
+        if self.mp != -1 and self.entries_today < p["ETD"] and self.L() < value2 \
+                and self.average(self.C, p["MA1"]) < self.average(self.C, p["MA2"]) and p["MA1"] < p["MA2"]:
+            self.sellshort_stop(self.lowest(self.L, p["HN"]), "N 根最低跌破")
+
+        if self.mp < 0:
+            self.buytocover_stop(self.entryprice + TICKSIZE * p["LOSS"], "停損")
+            self.buytocover_limit(self.entryprice - TICKSIZE * p["WIN"], "停利")
+
+        if self.checkday and self.T() == p["TN"]:
+            self.buytocover_market("結算日出場")
+        if self.weekend_exit_due(p["TNw"]):
+            self.exit_market("週末出場")
+
+    def debug(self):
+        p = self.p
+        mid, v2 = self._value()
+        return {"最低價": self.L(), f"週低({int(p['N1'])})": self.lowW(p["N1"]),
+                f"日收({int(p['N2'])})": self.closeD(p["N2"]), "區間中值": mid, "進場價 value2": v2,
+                f"MA{int(p['MA1'])}": self.average(self.C, p["MA1"]), f"MA{int(p['MA2'])}": self.average(self.C, p["MA2"]),
+                "均線空頭": self.average(self.C, p["MA1"]) < self.average(self.C, p["MA2"]),
+                f"最低({int(p['HN'])}根)": self.lowest(self.L, p["HN"]),
+                "今日進場次數": self.entries_today, "結算日": self.checkday}
+
+
 # ⚠️ 指標參數（LADDER/OPENRULE/OPENVOL/AVL_RESET/MA1/MA2）已校準鎖定，見 ORBIT_HANDOFF.md；改進請加新參數，預設維持現行行為
 class GapTracker:
     """日 K 奇襲缺口追蹤（v3 Orbit_gap 與 v1 的 USE_GAP 濾網共用，不要各寫一份）。
@@ -672,6 +771,7 @@ class DemoMA(Strategy):
 
 
 REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, ARCrossunder2025, GuYuan2024, GuYuan2025,
+                                  GuYuan2024Short, GuYuan2025Short,
                                   OrbitCost30, OrbitGap, DemoMA)}
 
 # 進場 K 災難停損（EBX）是 el.Strategy 的共用機制：每支策略都加這個參數，預設 0＝關閉、行為與 MC 一致。
