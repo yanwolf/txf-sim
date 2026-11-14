@@ -138,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
             r = BACKTEST.result
             if r is None:
                 self._send(200, {"empty": True}); return
-            if q.get("full", ["0"])[0] == "1" or r.get("kind") == "levels":
+            if q.get("full", ["0"])[0] == "1" or r.get("kind") in ("levels", "scan"):
                 self._send(200, r); return
             light = {k: v for k, v in r.items() if k not in ("trades", "equity")}
             light["trades"] = r["trades"][-300:]
@@ -151,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/backtest/csv":
             from .backtest import BACKTEST
             r = BACKTEST.result
-            if r is None:
+            if r is None or "trades" not in r:
                 self._send(404, {"error": "尚無回測結果"}); return
             cols = ["strategy", "side", "entry_time", "entry_price", "entry_label",
                     "exit_time", "exit_price", "exit_label", "pts", "net_pts", "money", "mae", "mfe", "vol20", "trend20"]

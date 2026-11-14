@@ -371,7 +371,7 @@ class Backtester:
                     self._progress = val
                 elif kind == "result":
                     self.result = val
-                    if val.get("kind") != "levels":
+                    if val.get("kind") not in ("levels", "scan"):
                         history_add(val)
                     self.progress = f"完成（{time.time() - t0:.1f} 秒）"
                     break
@@ -457,7 +457,11 @@ class Backtester:
         # 建立策略實例（獨立於即時跑的那組）
         cfg = portfolio.effective_config()
         strats = []
-        for name, cls in REGISTRY.items():
+        scan = None
+        if params.get("mode") == "scan":
+            scan = _scan_setup(params, cfg)
+            strats = scan["strats"]
+        for name, cls in ([] if scan else REGISTRY.items()):
             c = dict(cfg.get(name, {}))
             if names is not None and name not in names:
                 continue
@@ -528,7 +532,8 @@ class Backtester:
 
         for i, b in enumerate(m1):
             if i % 5000 == 0:
-                self.progress = f"重播 {i:,}/{len(m1):,}（{i * 100 // max(len(m1), 1)}%）…"
+                self.progress = (f"重播 {i:,}/{len(m1):,}（{i * 100 // max(len(m1), 1)}%）"
+                                 + (f"，同時跑 {len(strats)} 組參數" if scan else "") + "…")
             ts = b["ts"]
             bar_dt = tf.parse_ts(ts)
             m1_end = bar_dt + timedelta(minutes=1)
@@ -563,7 +568,7 @@ class Backtester:
                     if r:
                         on_fill(s, r[0], r[1], r[2], ts)
             # 浮動權益（已實現 + 目前所有未平倉的未實現）→ 真正的組合回撤
-            if (i % 5 == 0 or i == len(m1) - 1) and counted(ts):
+            if scan is None and (i % 5 == 0 or i == len(m1) - 1) and counted(ts):
                 unreal = 0.0
                 for ot in open_trade.values():
                     if ot and counted(ot.entry_time):
@@ -579,6 +584,9 @@ class Backtester:
                     eq_track["mdd"], eq_track["from"], eq_track["to"] = dd, eq_track["peak_t"], ts
 
         self.progress = "計算績效…"
+        if scan is not None:
+            return _scan_result(scan, trades, open_trade, m1, bpv, cost, params, source, stats_from,
+                                warm_used, contract, trading_days)
         # 未平倉的：用最後價格結算，標記為持倉中
         last_price, last_ts = m1[-1]["close"], m1[-1]["ts"]
         open_list = []
@@ -641,6 +649,128 @@ class Backtester:
             "trades": [t.as_dict(bpv) for t in trades],
             "open_positions": open_list,
         }
+
+
+# ------------------------------------------------------------ 參數掃描
+SCAN_MAX = int(_os.getenv("SCAN_MAX_COMBOS", "400"))
+
+
+def _scan_values(spec):
+    """'5,10,15' → [5,10,15]；'5~20/5' → [5,10,15,20]；單一數字 → [x]。"""
+    out = []
+    for part in str(spec).replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "~" in part:
+            rng, _, step = part.partition("/")
+            a, _, b = rng.partition("~")
+            a, b = float(a), float(b)
+            st = abs(float(step)) if step.strip() else 1.0
+            if st <= 0:
+                raise ValueError(f"間隔要大於 0：{part}")
+            n = int(math.floor((b - a) / st + 1e-9)) + 1
+            if n > 1000:
+                raise ValueError(f"{part} 展開超過 1000 個值")
+            out += [round(a + k * st, 6) for k in range(max(n, 0))]
+        else:
+            out.append(float(part))
+    vals = []
+    for v in out:
+        v = int(v) if float(v).is_integer() else v
+        if v not in vals:
+            vals.append(v)
+    return vals
+
+
+def _scan_setup(params, cfg):
+    """把一支策略的參數格點展開成多個實例，在同一次重播裡一起跑（K 棒只組一次）。"""
+    import itertools
+    name = params.get("strategy")
+    if name not in REGISTRY:
+        raise ValueError(f"找不到策略 {name}")
+    cls = REGISTRY[name]
+    grid_in = params.get("grid") or {}
+    keys, lists = [], []
+    for k, spec in grid_in.items():
+        if k not in cls.inputs:
+            raise ValueError(f"{name} 沒有參數 {k}")
+        vals = _scan_values(spec)
+        if vals:
+            keys.append(k); lists.append(vals)
+    if not keys:
+        raise ValueError("至少要填一個掃描參數")
+    combos = list(itertools.product(*lists))
+    if len(combos) > SCAN_MAX:
+        raise ValueError(f"共 {len(combos):,} 組，超過上限 {SCAN_MAX} 組，請縮小範圍或加大間隔")
+    base = dict(cfg.get(name, {}))
+    base_inputs = dict(cls.inputs); base_inputs.update(base.get("inputs", {}))
+    base_inputs.update((params.get("inputs") or {}).get(name, {}))
+    strats = []
+    for i, combo in enumerate(combos):
+        c = dict(base)
+        c["inputs"] = {**base_inputs, **dict(zip(keys, combo))}
+        c["enabled"] = True
+        s = cls(c)
+        s.name = f"{name}#{i}"
+        s.log = lambda *a: None
+        strats.append(s)
+    return {"name": name, "keys": keys, "combos": combos, "strats": strats, "base": base_inputs,
+            "split": (params.get("split") or "").strip()}
+
+
+def _scan_result(scan, trades, open_trade, m1, bpv, cost, params, source, stats_from, warm_used,
+                 contract, trading_days):
+    split = scan["split"]
+
+    def st(ts):
+        ts = sorted(ts, key=lambda t: (t.exit_time or "", t.entry_time or ""))
+        e, curve = 0.0, []
+        for t in ts:
+            e += t.net_pts; curve.append((t.exit_time, e))
+        x = _stats(ts, bpv, curve)
+        keep = ("trades", "net_pts", "win_rate", "profit_factor", "max_dd_pts", "recovery_factor",
+                "expectancy", "max_consec_loss", "avg_win", "avg_loss")
+        return {k: x.get(k, 0) for k in keep}
+
+    by = {}
+    for t in trades:
+        by.setdefault(t.strategy, []).append(t)
+    rows = []
+    for i, (s, combo) in enumerate(zip(scan["strats"], scan["combos"])):
+        ts = by.get(s.name, [])
+        years = {}
+        for t in ts:
+            years[t.entry_time[:4]] = round(years.get(t.entry_time[:4], 0) + t.net_pts, 1)
+        row = {"i": i, "params": dict(zip(scan["keys"], combo)), "all": st(ts), "years": years,
+               "open": bool(open_trade.get(s.name))}
+        if split:
+            row["is"] = st([t for t in ts if t.entry_time < split])
+            row["oos"] = st([t for t in ts if t.entry_time >= split])
+        rows.append(row)
+    # 鄰近穩定度：每一格與它在格點上相鄰（只差一個參數一格）的所有組合，取淨點數最小值
+    pos = {tuple(r["params"][k] for k in scan["keys"]): r for r in rows}
+    idx = [{v: j for j, v in enumerate(sorted({c[n] for c in scan["combos"]}))} for n in range(len(scan["keys"]))]
+    vals = [sorted(d, key=d.get) for d in idx]
+    for key, r in pos.items():
+        worst = r["all"]["net_pts"]
+        for n, v in enumerate(key):
+            j = idx[n][v]
+            for jj in (j - 1, j + 1):
+                if 0 <= jj < len(vals[n]):
+                    nb = pos.get(key[:n] + (vals[n][jj],) + key[n + 1:])
+                    if nb:
+                        worst = min(worst, nb["all"]["net_pts"])
+        r["neighbor_min"] = round(worst, 1)
+    return {
+        "kind": "scan",
+        "params": {"run_at": STATE_now_str(), "source": source, "strategy": scan["name"], "keys": scan["keys"],
+                   "base": scan["base"], "split": split, "combos": len(rows),
+                   "start": (stats_from + " 00:00") if stats_from else m1[0]["ts"], "end": m1[-1]["ts"],
+                   "cost_pts": cost, "contract": contract, "bpv": bpv, "bars": len(m1), "warmup_days": warm_used,
+                   "days": len([d for d in trading_days if stats_from is None or d.isoformat() >= stats_from])},
+        "rows": rows,
+    }
 
 
 BACKTEST = Backtester()
