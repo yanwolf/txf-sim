@@ -669,6 +669,8 @@ async function runScan(){
   let gg; try{gg=scGrid();}catch(e){alert(e.message);return;}
   if(!Object.keys(gg.g).length){alert('至少要填一個掃描參數');return;}
   if(gg.n>SCMAX){alert(`共 ${gg.n} 組，超過上限 ${SCMAX} 組`);return;}
+  const sp=$('sc-split').value, s0=$('bt-start').value, s1=$('bt-end').value;
+  if(sp&&((s0&&sp<=s0)||(s1&&sp>s1))&&!confirm(`樣本外起日 ${sp} 不在回測區間 ${s0||'最早'} ~ ${s1||'最新'} 內，樣本內／樣本外會有一邊是空的。仍要繼續？`))return;
   $('sc-run').disabled=true; $('bt-run').disabled=true; $('bt-msg').textContent='啟動中…';
   const body={mode:'scan',strategy:$('sc-s').value,grid:gg.g,split:$('sc-split').value,start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,contract:$('bt-contract').value,warmup_days:$('bt-warm').value,source:$('bt-src').value};
   const r=await fetch('/api/backtest/run',{method:'POST',headers:hdr(),body:JSON.stringify(body)});
@@ -677,23 +679,55 @@ async function runScan(){
 }
 const scGet=(r,k)=>{const [a,b]=k.split('.'); if(a==='p')return r.params[b]; if(a==='nb')return r.neighbor_min; return r[a]?r[a][b]:null;};
 function scSort(k){SCSORT=SCSORT.k===k?{k,d:-SCSORT.d}:{k,d:-1}; renderScan(LASTSCAN);}
+let SCMERGE=true;
+function scSig(x){return JSON.stringify([x.all,x.is||null,x.oos||null]);}
+function scImpact(r){
+  // 每個參數：固定其他參數，只動這個參數時淨點數的最大差距，取平均；0＝完全沒影響
+  const keys=r.params.keys, out={};
+  for(const k of keys){
+    const g={};
+    for(const x of r.rows){const o=keys.filter(z=>z!==k).map(z=>x.params[z]).join('|'); (g[o]=g[o]||[]).push(x.all.net_pts);}
+    const sp=Object.values(g).filter(v=>v.length>1).map(v=>Math.max(...v)-Math.min(...v));
+    out[k]=sp.length?{avg:sp.reduce((a,b)=>a+b,0)/sp.length,max:Math.max(...sp)}:null;
+  }
+  return out;
+}
 function renderScan(r){
   LASTSCAN=r;
   const p=r.params, keys=p.keys, split=!!p.split;
-  const rows=[...r.rows].sort((a,b)=>((scGet(a,SCSORT.k)??-1e18)-(scGet(b,SCSORT.k)??-1e18))*SCSORT.d);
-  const isBase=x=>keys.every(k=>Number(x.params[k])===Number(p.base[k]));
+  let rows=[...r.rows];
+  if(SCMERGE){
+    const g=new Map();
+    for(const x of rows){const k=scSig(x); if(!g.has(k))g.set(k,[]); g.get(k).push(x);}
+    rows=[...g.values()].map(gr=>{
+      const rep={...gr[0],group:gr,nb:Math.min(...gr.map(y=>y.neighbor_min))};
+      rep.neighbor_min=rep.nb; return rep;});
+  }
+  rows.sort((a,b)=>((scGet(a,SCSORT.k)??-1e18)-(scGet(b,SCSORT.k)??-1e18))*SCSORT.d);
+  const isBase1=x=>keys.every(k=>Number(x.params[k])===Number(p.base[k]));
+  const isBase=x=>(x.group||[x]).some(isBase1);
+  const pv=(x,k)=>{const vs=[...new Set((x.group||[x]).map(y=>y.params[k]))].sort((a,b)=>a-b); return vs.length>1?`<span title="這幾個值結果完全相同">${vs.join('/')}</span>`:vs[0];};
   const th=(k,t,tip)=>`<th style="cursor:pointer" title="${tip||'點一下排序'}" onclick="scSort('${k}')">${t}${SCSORT.k===k?(SCSORT.d<0?' ▼':' ▲'):''}</th>`;
-  const win=r.rows.filter(x=>x.all.net_pts>0).length;
+  const uniq=new Set(r.rows.map(scSig)).size;
+  const uwin=new Set(r.rows.filter(x=>x.all.net_pts>0).map(scSig)).size;
   const best=[...r.rows].sort((a,b)=>b.all.net_pts-a.all.net_pts)[0];
   const yr=x=>Object.entries(x.years).map(([y,v])=>`${y}: ${v}`).join('\n');
+  const imp=scImpact(r);
+  const impTxt=keys.map(k=>{const m=imp[k]; if(!m)return `${k}：只有一個值`;
+    return m.max<0.05?`<b>${k}</b>：<span class="st-warn">完全沒影響</span>`:`<b>${k}</b>：平均 ${M(m.avg,0)} 點、最多 ${M(m.max,0)} 點`;}).join('　·　');
+  const st=(p.start||'').slice(0,10), en=(p.end||'').slice(0,10);
+  const badSplit=split&&(p.split<=st||p.split>en);
   $('bt-out').innerHTML=`<div class="card"><h3>參數掃描：${p.strategy}</h3>
-    <div class="desc">${p.run_at||''} 執行　·　${srcName(p.source)}　·　${(p.start||'').slice(0,10)} ~ ${(p.end||'').slice(0,10)}　·　${M(p.bars)} 根 1 分 K　·　${p.contract}　·　單邊成本 ${p.cost_pts} 點${split?`　·　樣本外自 <b>${p.split}</b>`:''}</div>
-    <div class="acc" style="padding:8px 12px;margin:8px 0">共 ${p.combos} 組，全期賺錢 ${win} 組（${(win/p.combos*100).toFixed(0)}%）。最佳：${keys.map(k=>k+'='+best.params[k]).join('、')}，${M(best.all.net_pts,1)} 點。<span class="st-gold">金色列</span>＝目前設定值。<br>
-    「鄰近最差」＝這組與格點上只差一格的組合中，淨點數最差的那個；數字高代表參數附近都穩，不是孤峰。滑過「淨點數」可看逐年。</div>
+    <div class="desc">${p.run_at||''} 執行　·　${srcName(p.source)}　·　${st} ~ ${en}　·　${M(p.bars)} 根 1 分 K　·　${p.contract}　·　單邊成本 ${p.cost_pts} 點${split?`　·　樣本外自 <b>${p.split}</b>`:''}</div>
+    ${badSplit?`<div class="st-warn" style="font-size:13px;margin:6px 0">⚠️ 樣本外起日 ${p.split} 不在回測區間（${st} ~ ${en}）內，樣本內／樣本外有一邊是空的，這次的拆分沒有意義</div>`:''}
+    <div class="acc" style="padding:8px 12px;margin:8px 0">共 ${p.combos} 組，其中結果不同的有 <b>${uniq}</b> 種，賺錢 ${uwin} 種（${(uwin/uniq*100).toFixed(0)}%）。最佳：${keys.map(k=>k+'='+best.params[k]).join('、')}，${M(best.all.net_pts,1)} 點。<span class="st-gold">金色列</span>＝目前設定值。<br>
+    參數影響度（固定其他參數、只動這一個時，淨點數差多少）：${impTxt}<br>
+    「鄰近最差」＝格點上只差一格的組合中，淨點數最差的那個；數字高代表參數附近都穩，不是孤峰。滑過「淨點數」可看逐年。</div>
+    <div class="row"><label><input type="checkbox" ${SCMERGE?'checked':''} onchange="SCMERGE=this.checked;renderScan(LASTSCAN)"> 合併結果完全相同的組合</label></div>
     <div class="scroll" style="max-height:560px"><table><thead><tr><th>#</th>${keys.map(k=>th('p.'+k,k)).join('')}
       ${th('all.trades','筆數')}${th('all.net_pts','淨點數')}${th('all.profit_factor','PF')}${th('all.win_rate','勝率')}${th('all.max_dd_pts','回撤')}${th('all.recovery_factor','回復因子')}${th('nb','鄰近最差','與相鄰格點比，淨點數最差的值')}
       ${split?th('is.net_pts','樣本內淨')+th('is.profit_factor','內 PF')+th('oos.net_pts','樣本外淨')+th('oos.profit_factor','外 PF')+th('oos.trades','外筆數'):''}<th></th></tr></thead><tbody>
-    ${rows.map(x=>`<tr class="num${isBase(x)?' st-gold':''}"><td>${x.i}</td>${keys.map(k=>`<td>${x.params[k]}</td>`).join('')}
+    ${rows.map(x=>`<tr class="num${isBase(x)?' st-gold':''}"><td>${x.i}${x.group&&x.group.length>1?`<span style="color:var(--dim)"> 等${x.group.length}組</span>`:''}</td>${keys.map(k=>`<td>${pv(x,k)}</td>`).join('')}
       <td>${x.all.trades}</td><td class="${cls(x.all.net_pts)}" title="${yr(x)}">${M(x.all.net_pts,1)}</td><td>${x.all.profit_factor}</td><td>${x.all.win_rate}%</td><td class="down">${M(x.all.max_dd_pts,1)}</td><td>${x.all.recovery_factor}</td><td class="${cls(x.neighbor_min)}">${M(x.neighbor_min,1)}</td>
       ${split?`<td class="${cls(x.is.net_pts)}">${M(x.is.net_pts,1)}</td><td>${x.is.profit_factor}</td><td class="${cls(x.oos.net_pts)}">${M(x.oos.net_pts,1)}</td><td>${x.oos.profit_factor}</td><td>${x.oos.trades}</td>`:''}
       <td><button onclick="scOne(${x.i})" title="用這組參數跑一次完整回測（看月報、出場原因、權益曲線）">單跑</button></td></tr>`).join('')}</tbody></table></div>
