@@ -236,7 +236,7 @@
         <label>資料 <select id="bt-src"><option value="live">永豐即時累積</option><option value="mc">MC 歷史（之後接永豐）</option></select></label>
         <label>暖機 <input type="number" id="bt-warm" value="15" min="0" style="width:60px"> 交易日</label>
         <label>商品 <select id="bt-contract"><option value="TMF">微台（10元/點）</option><option value="MXF">小台（50元/點）</option><option value="TXF">大台（200元/點）</option></select></label>
-        <label>單邊成本 <input type="number" id="bt-cost" value="2" step="0.5" style="width:70px"> 點</label>
+        <label>單邊成本 <input type="number" id="bt-cost" value="2" step="0.5" style="width:70px"> 點 ＋ <input type="number" id="bt-bps" value="0" step="0.1" min="0" style="width:60px"> bps</label>
       </div>
       <div class="desc" id="bt-cap" style="margin:2px 0"></div>
       <div class="row" id="bt-picks"></div>
@@ -724,7 +724,7 @@ async function runScan(){
   const sp=$('sc-split').value, s0=$('bt-start').value, s1=$('bt-end').value;
   if(sp&&((s0&&sp<=s0)||(s1&&sp>s1))&&!confirm(`樣本外起日 ${sp} 不在回測區間 ${s0||'最早'} ~ ${s1||'最新'} 內，樣本內／樣本外會有一邊是空的。仍要繼續？`))return;
   $('sc-run').disabled=true; $('bt-run').disabled=true; $('bt-msg').textContent='啟動中…';
-  const body={mode:'scan',strategy:$('sc-s').value,grid:gg.g,split:$('sc-split').value,start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,contract:$('bt-contract').value,warmup_days:$('bt-warm').value,source:$('bt-src').value};
+  const body={mode:'scan',strategy:$('sc-s').value,grid:gg.g,split:$('sc-split').value,start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,cost_bps:$('bt-bps').value,contract:$('bt-contract').value,warmup_days:$('bt-warm').value,source:$('bt-src').value};
   const r=await fetch('/api/backtest/run',{method:'POST',headers:hdr(),body:JSON.stringify(body)});
   if(!r.ok){$('bt-msg').textContent='無法啟動（可能已在執行）';$('sc-run').disabled=false;$('bt-run').disabled=false;return;}
   pollBT();
@@ -796,7 +796,7 @@ function renderScan(r){
   const st=(p.start||'').slice(0,10), en=(p.end||'').slice(0,10);
   const badSplit=split&&(p.split<=st||p.split>en);
   $('bt-out').innerHTML=`<div class="card"><h3>參數掃描：${p.strategy}</h3>
-    <div class="desc">${p.run_at||''} 執行　·　${srcName(p.source)}　·　${st} ~ ${en}　·　${M(p.bars)} 根 1 分 K　·　${p.contract}　·　單邊成本 ${p.cost_pts} 點${split?`　·　樣本外自 <b>${p.split}</b>`:''}</div>
+    <div class="desc">${p.run_at||''} 執行　·　${srcName(p.source)}　·　${st} ~ ${en}　·　${M(p.bars)} 根 1 分 K　·　${p.contract}　·　單邊成本 ${p.cost_pts} 點${p.cost_bps?' ＋ '+p.cost_bps+' bps':''}${split?`　·　樣本外自 <b>${p.split}</b>`:''}</div>
     ${badSplit?`<div class="st-warn" style="font-size:13px;margin:6px 0">⚠️ 樣本外起日 ${p.split} 不在回測區間（${st} ~ ${en}）內，樣本內／樣本外有一邊是空的，這次的拆分沒有意義</div>`:''}
     <div class="acc" style="padding:8px 12px;margin:8px 0">共 ${p.combos} 組，其中結果不同的有 <b>${uniq}</b> 種，賺錢 ${uwin} 種（${(uwin/uniq*100).toFixed(0)}%）。最佳：${keys.map(k=>k+'='+best.params[k]).join('、')}，${M(best.all.net_pts,1)} 點。<span class="st-gold">金色列</span>＝目前設定值。<br>
     參數影響度（固定其他參數、只動這一個時，淨點數差多少）：${impTxt}<br>
@@ -813,7 +813,7 @@ function renderScan(r){
 }
 async function scOne(i){
   const r=LASTSCAN, x=r.rows.find(y=>y.i===i), p=r.params;
-  const body={start:(p.start||'').slice(0,10),end:(p.end||'').slice(0,10),cost_pts:p.cost_pts,contract:p.contract,strategies:[p.strategy],
+  const body={start:(p.start||'').slice(0,10),end:(p.end||'').slice(0,10),cost_pts:p.cost_pts,cost_bps:p.cost_bps||0,contract:p.contract,strategies:[p.strategy],
     warmup_days:$('bt-warm').value,source:p.source,note:'掃描#'+i,inputs:{[p.strategy]:x.params}};
   const res=await fetch('/api/backtest/run',{method:'POST',headers:hdr(),body:JSON.stringify(body)});
   if(!res.ok){alert('無法啟動（可能已在執行）');return;}
@@ -823,7 +823,7 @@ async function runBT(){
   const names=[...document.querySelectorAll('.bt-s:checked')].map(x=>x.value);
   if(!names.length){alert('請至少選一支策略');return;}
   $('bt-run').disabled=true; $('bt-msg').textContent='啟動中…';
-  const body={start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,contract:$('bt-contract').value,strategies:names,warmup_days:$('bt-warm').value,source:$('bt-src').value,note:$('bt-note').value};
+  const body={start:$('bt-start').value,end:$('bt-end').value,cost_pts:$('bt-cost').value,cost_bps:$('bt-bps').value,contract:$('bt-contract').value,strategies:names,warmup_days:$('bt-warm').value,source:$('bt-src').value,note:$('bt-note').value};
   const r=await fetch('/api/backtest/run',{method:'POST',headers:hdr(),body:JSON.stringify(body)});
   if(!r.ok){$('bt-msg').textContent='無法啟動（可能已在執行）';$('bt-run').disabled=false;return;}
   pollBT();
@@ -865,7 +865,7 @@ function chgText(c){
   return ks.length?`<span class="st-gold">${ks.map(k=>k+'='+c[k]).join('、')}</span>`:'<span style="color:var(--dim)">預設</span>';
 }
 function runTag(p,x){
-  return `<div class="acc" style="padding:8px 12px;margin:0 0 10px"><b>${x?x.name:''}${x&&x.version?' '+x.version:''}</b>　${p.note?'<span class="st-gold">'+p.note+'</span>　':''}參數：${x?chgText(x.changed):''}<div class="desc" style="margin:4px 0 0">${p.run_at||''} 執行　·　${srcName(p.source)}　·　${(p.start||'').slice(0,10)} ~ ${(p.end||'').slice(0,10)}　·　單邊成本 ${p.cost_pts} 點</div>${(p.gaps&&p.gaps.length)?`<div class="st-bad" style="font-size:12px;margin-top:4px">⚠️ 區間內有資料缺口：${p.gaps.join('、')}，該段沒有交易，結果會失真</div>`:''}</div>`;
+  return `<div class="acc" style="padding:8px 12px;margin:0 0 10px"><b>${x?x.name:''}${x&&x.version?' '+x.version:''}</b>　${p.note?'<span class="st-gold">'+p.note+'</span>　':''}參數：${x?chgText(x.changed):''}<div class="desc" style="margin:4px 0 0">${p.run_at||''} 執行　·　${srcName(p.source)}　·　${(p.start||'').slice(0,10)} ~ ${(p.end||'').slice(0,10)}　·　單邊成本 ${p.cost_pts} 點${p.cost_bps?' ＋ '+p.cost_bps+' bps':''}</div>${(p.gaps&&p.gaps.length)?`<div class="st-bad" style="font-size:12px;margin-top:4px">⚠️ 區間內有資料缺口：${p.gaps.join('、')}，該段沒有交易，結果會失真</div>`:''}</div>`;
 }
 function srcName(s){return s==='mc'?'MC 歷史':s==='live'?'<span class="st-gold">永豐即時</span>':(s||'—');}
 async function renderHist(){
@@ -873,7 +873,7 @@ async function renderHist(){
   const rows=r.rows||[];
   if(!rows.length){$('bt-hist').innerHTML='<div class="empty">尚無紀錄</div>';return;}
   $('bt-hist').innerHTML=`<div class="scroll"><table><thead><tr><th>時間</th><th>策略</th><th>備註</th><th>參數</th><th>資料</th><th>缺口</th><th>區間</th><th>成本</th><th>筆數</th><th>淨點數</th><th>勝率</th><th>PF</th><th>回撤</th><th>多單</th><th>空單</th></tr></thead><tbody>
-    ${rows.map(h=>`<tr class="num"><td>${h.run_at||''}</td><td style="text-align:left">${h.strategy}${h.version?' '+h.version:''}</td><td style="text-align:left">${h.note||''}</td><td style="text-align:left">${chgText(h.changed)}</td><td>${srcName(h.source)}</td><td class="${h.gaps?'st-bad':''}">${h.gaps?h.gaps+' 個月':'—'}</td><td>${(h.start||'').slice(2)}~${(h.end||'').slice(2)}</td><td>${h.cost_pts}</td><td>${h.trades}</td><td class="${cls(h.net_pts)}">${M(h.net_pts,1)}</td><td>${h.win_rate??'—'}%</td><td>${h.profit_factor??'—'}</td><td class="down">${M(h.max_dd_pts,1)}</td><td class="${cls(h.long[1])}">${h.long[0]??0}筆 ${M(h.long[1],1)}</td><td class="${cls(h.short[1])}">${h.short[0]??0}筆 ${M(h.short[1],1)}</td></tr>`).join('')}</tbody></table></div>`;
+    ${rows.map(h=>`<tr class="num"><td>${h.run_at||''}</td><td style="text-align:left">${h.strategy}${h.version?' '+h.version:''}</td><td style="text-align:left">${h.note||''}</td><td style="text-align:left">${chgText(h.changed)}</td><td>${srcName(h.source)}</td><td class="${h.gaps?'st-bad':''}">${h.gaps?h.gaps+' 個月':'—'}</td><td>${(h.start||'').slice(2)}~${(h.end||'').slice(2)}</td><td>${h.cost_pts}${h.cost_bps?'+'+h.cost_bps+'bps':''}</td><td>${h.trades}</td><td class="${cls(h.net_pts)}">${M(h.net_pts,1)}</td><td>${h.win_rate??'—'}%</td><td>${h.profit_factor??'—'}</td><td class="down">${M(h.max_dd_pts,1)}</td><td class="${cls(h.long[1])}">${h.long[0]??0}筆 ${M(h.long[1],1)}</td><td class="${cls(h.short[1])}">${h.short[0]??0}筆 ${M(h.short[1],1)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 async function clearHist(){
   if(!confirm('確定清除全部回測紀錄？'))return;
@@ -943,7 +943,7 @@ async function renderBT(){
   $('bt-out').innerHTML=(LASTSCAN?`<div class="row"><button onclick="renderScan(LASTSCAN)">← 回到 ${LASTSCAN.params.strategy} 掃描結果</button></div>`:'')+`
     <div class="card"><h3>組合績效</h3>
       ${names.length===1?runTag(p,r.per_strategy[names[0]]):runTag(p,null)}
-      <div class="desc">${p.start} ~ ${p.end}　·　${M(p.bars)} 根 1 分 K　·　${p.days} 個交易日　·　${p.source==='mc'?'MC 歷史':'永豐即時'}　·　${p.contract} 每點 ${p.bpv} 元　·　單邊成本 ${p.cost_pts} 點${p.warmup_days?`　·　暖機 ${p.warmup_days} 個交易日（自 ${p.warmup_from}，不計交易）`:''}</div>
+      <div class="desc">${p.start} ~ ${p.end}　·　${M(p.bars)} 根 1 分 K　·　${p.days} 個交易日　·　${p.source==='mc'?'MC 歷史':'永豐即時'}　·　${p.contract} 每點 ${p.bpv} 元　·　單邊成本 ${p.cost_pts} 點${p.cost_bps?' ＋ '+p.cost_bps+' bps':''}${p.warmup_days?`　·　暖機 ${p.warmup_days} 個交易日（自 ${p.warmup_from}，不計交易）`:''}</div>
       ${statBlock(c,p.bpv)}
       ${equitySVG(r.equity)}
       ${monthlyTable(c.monthly)}
@@ -964,7 +964,7 @@ tick(); setInterval(tick,3000);
 
 // 回測條件記住上次的選擇（重新整理後不會跳回「永豐即時」、成本 2 點等預設值）
 (function(){
-  const ids=['bt-start','bt-end','bt-src','bt-warm','bt-contract','bt-cost'];
+  const ids=['bt-start','bt-end','bt-src','bt-warm','bt-contract','bt-cost','bt-bps'];
   const KEY='bt-form-v1';
   let saved={};
   try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{};}catch(e){saved={};}

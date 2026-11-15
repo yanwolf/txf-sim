@@ -253,7 +253,7 @@ def _history_rows(r):
             "run_at": p.get("run_at"), "note": p.get("note", ""), "strategy": name,
             "version": x.get("version", ""), "changed": x.get("changed", {}),
             "start": (p.get("start") or "")[:10], "end": (p.get("end") or "")[:10],
-            "source": p.get("source"), "cost_pts": p.get("cost_pts"), "contract": p.get("contract"),
+            "source": p.get("source"), "cost_pts": p.get("cost_pts"), "cost_bps": p.get("cost_bps", 0), "contract": p.get("contract"),
             "trades": x.get("trades", 0), "net_pts": x.get("net_pts"), "win_rate": x.get("win_rate"),
             "profit_factor": x.get("profit_factor"), "max_dd_pts": x.get("max_dd_pts"),
             "expectancy": x.get("expectancy"),
@@ -390,7 +390,12 @@ class Backtester:
     def _backtest(self, params, portfolio):
         start = (params.get("start") or "").strip()
         end = (params.get("end") or "").strip()
-        cost = float(params.get("cost_pts", 2))          # 單邊成本（手續費+滑價，點）
+        cost = float(params.get("cost_pts", 2))          # 單邊固定成本（點）
+        cost_bps = float(params.get("cost_bps", 0) or 0)  # 單邊比例成本（萬分之幾，隨價位縮放：滑價、期交稅）
+
+        def rt_cost(p_in, p_out):
+            """來回成本（點）＝ 固定 ×2 ＋ 進出場價 × bps"""
+            return cost * 2 + (p_in + p_out) * cost_bps / 10000.0
         contract = (params.get("contract") or "TMF").upper()
         bpv = BPV.get(contract, 10)
         names = params.get("strategies") or None          # None = 全部啟用中的
@@ -519,13 +524,13 @@ class Backtester:
             ot = open_trade[s.name]
             if action in ("sell", "buytocover"):
                 if ot:
-                    t = ot.close(ts, price, label, cost * 2)
+                    t = ot.close(ts, price, label, rt_cost(ot.entry_price, price))
                     if counted(t.entry_time):
                         trades.append(t); realized["v"] += t.net_pts
                     open_trade[s.name] = None
             else:
                 if ot:   # 反手：先平再開
-                    t = ot.close(ts, price, "反手", cost * 2)
+                    t = ot.close(ts, price, "反手", rt_cost(ot.entry_price, price))
                     if counted(t.entry_time):
                         trades.append(t); realized["v"] += t.net_pts
                 nt = Trade(s.name, 1 if action == "buy" else -1, ts, price, label)
@@ -574,7 +579,7 @@ class Backtester:
                 unreal = 0.0
                 for ot in open_trade.values():
                     if ot and counted(ot.entry_time):
-                        unreal += (b["close"] - ot.entry_price) * ot.side - cost * 2
+                        unreal += (b["close"] - ot.entry_price) * ot.side - rt_cost(ot.entry_price, b["close"])
                 eqv = realized["v"] + unreal
                 float_curve.append((ts, eqv))
                 if eq_track["peak_t"] is None:
@@ -597,7 +602,7 @@ class Backtester:
             if ot:
                 d = Trade(ot.strategy, ot.side, ot.entry_time, ot.entry_price, ot.entry_label)
                 d.bars_held, d.mae, d.mfe = ot.bars_held, ot.mae, ot.mfe
-                d.close(last_ts, last_price, "持倉中（以最後價估算）", cost * 2)
+                d.close(last_ts, last_price, "持倉中（以最後價估算）", rt_cost(ot.entry_price, last_price))
                 open_list.append(d.as_dict(bpv))
 
         trades.sort(key=lambda t: (t.exit_time or "", t.entry_time or ""))
@@ -638,7 +643,7 @@ class Backtester:
         return {
             "params": {"note": (params.get("note") or "").strip()[:60], "gaps": gaps,
                        "run_at": STATE_now_str(), "source": source, "start": (stats_from + " 00:00") if stats_from else m1[0]["ts"],
-                       "end": m1[-1]["ts"], "cost_pts": cost,
+                       "end": m1[-1]["ts"], "cost_pts": cost, "cost_bps": cost_bps,
                        "warmup_days": warm_used, "warmup_from": m1[0]["ts"][:10],
                        "contract": contract, "bpv": bpv, "bars": len(m1),
                        "days": len([d for d in trading_days if stats_from is None or d.isoformat() >= stats_from]),
@@ -769,7 +774,8 @@ def _scan_result(scan, trades, open_trade, m1, bpv, cost, params, source, stats_
         "params": {"run_at": STATE_now_str(), "source": source, "strategy": scan["name"], "keys": scan["keys"],
                    "base": scan["base"], "split": split, "combos": len(rows),
                    "start": (stats_from + " 00:00") if stats_from else m1[0]["ts"], "end": m1[-1]["ts"],
-                   "cost_pts": cost, "contract": contract, "bpv": bpv, "bars": len(m1), "warmup_days": warm_used,
+                   "cost_pts": cost, "cost_bps": float(params.get("cost_bps", 0) or 0), "contract": contract, "bpv": bpv,
+                   "bars": len(m1), "warmup_days": warm_used,
                    "days": len([d for d in trading_days if stats_from is None or d.isoformat() >= stats_from])},
         "rows": rows,
     }
