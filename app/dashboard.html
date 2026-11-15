@@ -239,6 +239,7 @@
       <div class="row"><label>策略 <select id="sc-s" onchange="scForm()"></select></label><label>樣本外起日 <input type="date" id="sc-split"></label><span id="sc-n" style="font-size:13px"></span></div>
       <div class="pgrid" id="sc-grid"></div>
       <div class="row"><button class="primary" id="sc-run" onclick="runScan()">開始掃描</button></div>
+      <div id="sc-hist" style="margin-top:8px"></div>
     </div>
     <div id="bt-out"></div>
     <div class="card" id="bt-hist-card"><h3>回測紀錄比較</h3>
@@ -632,6 +633,7 @@ async function initBT(){
     scForm();
     BTinit=true;
   }
+  scHist();
   pollBT();
 }
 // ============ 參數掃描 ============
@@ -680,6 +682,32 @@ async function runScan(){
 const scGet=(r,k)=>{const [a,b]=k.split('.'); if(a==='p')return r.params[b]; if(a==='nb')return r.neighbor_min; return r[a]?r[a][b]:null;};
 function scSort(k){SCSORT=SCSORT.k===k?{k,d:-SCSORT.d}:{k,d:-1}; renderScan(LASTSCAN);}
 let SCMERGE=true;
+async function scHist(){
+  const d=await fetch('/api/backtest/scans',{headers:hdr()}).then(r=>r.json()).catch(()=>[]);
+  if(!Array.isArray(d)||!d.length){$('sc-hist').innerHTML='';return;}
+  $('sc-hist').innerHTML='<div class="desc">最近的掃描（存在資料庫，重新部署也不會不見）：</div>'+d.map(x=>
+    `<div style="font-size:13px;margin:4px 0"><button onclick="scOpen('${x.id}')">開啟</button>　${x.run_at||''}　<b>${x.strategy}</b>　${x.combos} 組（${(x.keys||[]).join('、')}）　${(x.start||'').slice(0,10)} ~ ${(x.end||'').slice(0,10)}${x.split?'　樣本外自 '+x.split:''}</div>`).join('');
+}
+async function scOpen(id){
+  const r=await fetch('/api/backtest/scans?id='+id,{headers:hdr()}).then(r=>r.json()).catch(()=>null);
+  if(!r||!r.rows){alert('讀取失敗');return;}
+  renderScan(r); $('bt-out').scrollIntoView({behavior:'smooth'});
+}
+function scDownload(kind){
+  const r=LASTSCAN; if(!r)return;
+  const p=r.params, name=`scan_${p.strategy}_${(p.run_at||'').replace(/[^0-9]/g,'').slice(0,12)}`;
+  let blob;
+  if(kind==='json'){blob=new Blob([JSON.stringify(r)],{type:'application/json'});}
+  else{
+    const years=[...new Set(r.rows.flatMap(x=>Object.keys(x.years)))].sort();
+    const sk=['trades','net_pts','profit_factor','win_rate','max_dd_pts','recovery_factor','expectancy','max_consec_loss','avg_win','avg_loss'];
+    const head=['#',...p.keys,...sk.map(k=>'全期_'+k),'鄰近最差',...(p.split?[...sk.map(k=>'樣本內_'+k),...sk.map(k=>'樣本外_'+k)]:[]),...years];
+    const lines=[head.join(',')].concat(r.rows.map(x=>[x.i,...p.keys.map(k=>x.params[k]),...sk.map(k=>x.all[k]),x.neighbor_min,
+      ...(p.split?[...sk.map(k=>x.is[k]),...sk.map(k=>x.oos[k])]:[]),...years.map(y=>x.years[y]??0)].join(',')));
+    blob=new Blob(['﻿'+lines.join('\n')],{type:'text/csv;charset=utf-8'});
+  }
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name+'.'+kind; document.body.appendChild(a); a.click(); a.remove();
+}
 function scSig(x){return JSON.stringify([x.all,x.is||null,x.oos||null]);}
 function scImpact(r){
   // 每個參數：固定其他參數，只動這個參數時淨點數的最大差距，取平均；0＝完全沒影響
@@ -723,7 +751,7 @@ function renderScan(r){
     <div class="acc" style="padding:8px 12px;margin:8px 0">共 ${p.combos} 組，其中結果不同的有 <b>${uniq}</b> 種，賺錢 ${uwin} 種（${(uwin/uniq*100).toFixed(0)}%）。最佳：${keys.map(k=>k+'='+best.params[k]).join('、')}，${M(best.all.net_pts,1)} 點。<span class="st-gold">金色列</span>＝目前設定值。<br>
     參數影響度（固定其他參數、只動這一個時，淨點數差多少）：${impTxt}<br>
     「鄰近最差」＝格點上只差一格的組合中，淨點數最差的那個；數字高代表參數附近都穩，不是孤峰。滑過「淨點數」可看逐年。</div>
-    <div class="row"><label><input type="checkbox" ${SCMERGE?'checked':''} onchange="SCMERGE=this.checked;renderScan(LASTSCAN)"> 合併結果完全相同的組合</label></div>
+    <div class="row"><label><input type="checkbox" ${SCMERGE?'checked':''} onchange="SCMERGE=this.checked;renderScan(LASTSCAN)"> 合併結果完全相同的組合</label><button onclick="scDownload('csv')">下載 CSV</button><button onclick="scDownload('json')">下載 JSON</button></div>
     <div class="scroll" style="max-height:560px"><table><thead><tr><th>#</th>${keys.map(k=>th('p.'+k,k)).join('')}
       ${th('all.trades','筆數')}${th('all.net_pts','淨點數')}${th('all.profit_factor','PF')}${th('all.win_rate','勝率')}${th('all.max_dd_pts','回撤')}${th('all.recovery_factor','回復因子')}${th('nb','鄰近最差','與相鄰格點比，淨點數最差的值')}
       ${split?th('is.net_pts','樣本內淨')+th('is.profit_factor','內 PF')+th('oos.net_pts','樣本外淨')+th('oos.profit_factor','外 PF')+th('oos.trades','外筆數'):''}<th></th></tr></thead><tbody>
@@ -859,7 +887,7 @@ async function renderBT(){
   const r=await fetch('/api/backtest/result',{headers:hdr()}).then(x=>x.json());
   if(r.empty){$('bt-out').innerHTML='';return;}
   if(r.kind==='levels'){renderLevels(r);return;}
-  if(r.kind==='scan'){renderScan(r);return;}
+  if(r.kind==='scan'){renderScan(r);scHist();return;}
   const p=r.params, c=r.combined;
   const names=Object.keys(r.per_strategy);
   $('bt-out').innerHTML=(LASTSCAN?`<div class="row"><button onclick="renderScan(LASTSCAN)">← 回到 ${LASTSCAN.params.strategy} 掃描結果</button></div>`:'')+`

@@ -133,6 +133,13 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/backtest/status":
             from .backtest import BACKTEST, max_bars, _available_mb
             self._send(200, {**BACKTEST.status(), "max_bars": max_bars(), "avail_mb": round(_available_mb())})
+        elif u.path == "/api/backtest/scans":
+            from .backtest import scan_index, scan_load
+            sid = q.get("id", [""])[0]
+            if sid:
+                r = scan_load(sid)
+                self._send(200 if r else 404, r or {"error": "找不到這份掃描"}); return
+            self._send(200, scan_index())
         elif u.path == "/api/backtest/result":
             from .backtest import BACKTEST
             r = BACKTEST.result

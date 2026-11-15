@@ -373,6 +373,8 @@ class Backtester:
                     self.result = val
                     if val.get("kind") not in ("levels", "scan"):
                         history_add(val)
+                    if val.get("kind") == "scan":
+                        scan_save(val)
                     self.progress = f"完成（{time.time() - t0:.1f} 秒）"
                     break
                 elif kind == "error":
@@ -774,3 +776,45 @@ def _scan_result(scan, trades, open_trade, m1, bpv, cost, params, source, stats_
 
 
 BACKTEST = Backtester()
+
+
+# 掃描結果存進資料庫（最近 SCAN_KEEP 份），重新部署／重啟／再跑一次回測都不會不見
+SCAN_KEEP = 8
+
+
+def scan_index():
+    from .db import DB_
+    try:
+        return DB_.get_kv("scan_index", []) or []
+    except Exception:
+        return []
+
+
+def scan_save(val):
+    from .db import DB_
+    try:
+        import uuid
+        sid = uuid.uuid4().hex[:10]
+        DB_.set_kv("scan_" + sid, val)
+        p = val.get("params", {})
+        idx = [{"id": sid, "run_at": p.get("run_at"), "strategy": p.get("strategy"), "combos": p.get("combos"),
+                "keys": p.get("keys"), "start": p.get("start"), "end": p.get("end"), "split": p.get("split"),
+                "source": p.get("source")}] + scan_index()
+        for old in idx[SCAN_KEEP:]:
+            try:
+                DB_.run("DELETE FROM kv WHERE k=?", ("scan_" + old["id"],))
+            except Exception:
+                pass
+        DB_.set_kv("scan_index", idx[:SCAN_KEEP])
+    except Exception as e:
+        try:
+            STATE.log("WARN", f"掃描結果存檔失敗：{e}")
+        except Exception:
+            pass
+
+
+def scan_load(sid):
+    from .db import DB_
+    if not any(x["id"] == sid for x in scan_index()):
+        return None
+    return DB_.get_kv("scan_" + sid)
