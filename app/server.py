@@ -60,6 +60,47 @@ def _authed(handler):
     return _token_left(handler) > 0
 
 
+SJ_JOB = {"running": False, "log": [], "result": None, "error": None}
+
+
+def _sj_fill(start, end, overwrite):
+    import threading
+    from .db import DB_
+    from .engine import ENGINE
+    from .histimport import fetch_shioaji, compare_bars
+
+    def run():
+        SJ_JOB.update(running=True, log=[], result=None, error=None)
+        try:
+            api = ENGINE.api
+            if api is None:
+                raise RuntimeError("永豐 API 尚未登入（請先到「監控」確認連線正常）")
+            rows = fetch_shioaji(api, start, end, progress=lambda m, *_: SJ_JOB["log"].append(m))
+            if not rows:
+                raise RuntimeError(f"永豐在 {start} ~ {end} 沒有回傳任何 1 分 K（可能超出它提供的歷史範圍）")
+            old = {b["ts"]: b for b in DB_.load_range("hist_bars", rows[0][0], rows[-1][0])}
+            cmp_ = compare_bars(rows, old)
+            ins = rows if overwrite else [r for r in rows if r[0] not in old]
+            DB_.upsert_hist(ins)
+            months = {}
+            for r in ins:
+                months[r[0][:7]] = months.get(r[0][:7], 0) + 1
+            SJ_JOB["result"] = {"fetched": len(rows), "inserted": len(ins), "overlap": len(old),
+                                "first": rows[0][0], "last": rows[-1][0], "months": months, "compare": cmp_,
+                                "overwrite": overwrite}
+            STATE.log("INFO", f"永豐補 1 分 K {start} ~ {end}：抓到 {len(rows):,} 根，寫入 {len(ins):,} 根")
+        except Exception as e:
+            SJ_JOB["error"] = str(e)
+            STATE.log("WARN", f"永豐補資料失敗：{e}")
+        finally:
+            SJ_JOB["running"] = False
+
+    if SJ_JOB["running"]:
+        return False
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # 關掉預設 access log
         pass
@@ -221,6 +262,8 @@ class Handler(BaseHTTPRequestHandler):
             ses = [{"session": s.get("session"), "is_day": s.get("is_day"), "date": s["date"].isoformat(),
                     "end": s.get("ts"), "close": s["close"]} for s in sess if fd - _td(days=1) <= s["date"] <= td_]
             self._send(200, {"days": out, "sessions": ses}); return
+        elif u.path == "/api/hist/shioaji":
+            self._send(200, {**SJ_JOB, "log": SJ_JOB["log"][-8:]})
         elif u.path == "/api/hist/summary":
             from .db import DB_
             ys = DB_.hist_summary()
@@ -343,6 +386,13 @@ class Handler(BaseHTTPRequestHandler):
                     out.append({"name": url[:60], "ok": False, "error": str(e)})
                     STATE.log("WARN", f"歷史資料匯入失敗 {url[:60]}：{e}")
             self._send(200, {"ok": True, "files": out}); return
+        if u.path == "/api/hist/shioaji":
+            body = self._body()
+            st, en = str(body.get("start", ""))[:10], str(body.get("end", ""))[:10]
+            if not (st and en and st <= en):
+                self._send(400, {"ok": False, "error": "請填起訖日期"}); return
+            ok = _sj_fill(st, en, bool(body.get("overwrite")))
+            self._send(200 if ok else 409, {"ok": ok, "error": None if ok else "已經在補資料中"}); return
         if u.path == "/api/hist/clear":
             from .db import DB_
             DB_.hist_clear()

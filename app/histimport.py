@@ -90,3 +90,76 @@ def parse_chunk(text, time_label="end"):
             last = ts
     return rows, {"rows": len(rows), "bad": bad, "off_session": off, "suspicious": suspicious,
                   "first": first, "last": last}
+
+
+# ------------------------------------------------------------ 從永豐 Shioaji 補 1 分 K
+def _norm_close_minute(dt):
+    """跟 engine 一樣：13:45 / 05:00 的收盤撮合併入最後一根 1 分 K。"""
+    dt = dt.replace(second=0, microsecond=0)
+    if dt.hour == 13 and dt.minute == 45:
+        return dt.replace(minute=44)
+    if dt.hour == 5 and dt.minute == 0:
+        return dt.replace(hour=4, minute=59)
+    return dt
+
+
+def shioaji_contract(api, code="TXF"):
+    group = getattr(api.Contracts.Futures, code)
+    c = getattr(group, f"{code}R1", None)
+    if c is None and hasattr(group, "get"):
+        c = group.get(f"{code}R1")
+    if c is None:
+        raise RuntimeError(f"找不到 {code}R1 連續合約（合約檔可能還沒下載完）")
+    return c
+
+
+def fetch_shioaji(api, start, end, code="TXF", progress=None, sleep=0.3):
+    """用 api.kbars 抓 R1 連續月 1 分 K，轉成 hist_bars 的格式 [(ts,o,h,l,c,v)]，ts＝K 棒開始時間。
+    轉換規則與即時暖機回補（engine._warmup）完全相同，確保跟系統其他資料對得上。"""
+    import time as _t
+    from datetime import date as _date
+    c = shioaji_contract(api, code)
+    d0, d1 = _date.fromisoformat(start), _date.fromisoformat(end)
+    out, cs, n_chunk = {}, d0, 0
+    while cs <= d1:
+        ce = min(cs + timedelta(days=6), d1)
+        k = api.kbars(c, start=cs.isoformat(), end=ce.isoformat())
+        n = 0
+        for ts, o, h, l, cl, v in zip(k.ts, k.Open, k.High, k.Low, k.Close, k.Volume):
+            dt = _norm_close_minute(datetime.utcfromtimestamp(ts / 1e9) - timedelta(minutes=1))
+            if session_of(dt) is None:
+                continue
+            key = dt.strftime("%Y-%m-%d %H:%M")
+            b = out.get(key)
+            if b:
+                b[2] = max(b[2], float(h)); b[3] = min(b[3], float(l)); b[4] = float(cl); b[5] += int(v)
+            else:
+                out[key] = [key, float(o), float(h), float(l), float(cl), int(v)]
+            n += 1
+        n_chunk += 1
+        if progress:
+            progress(f"{cs} ~ {ce}：{n:,} 根", cs, ce)
+        cs = ce + timedelta(days=1)
+        _t.sleep(sleep)
+    return [tuple(v) for _, v in sorted(out.items())]
+
+
+def compare_bars(new_rows, old):
+    """new_rows 與資料庫已有的 K（old: ts→bar）比對；同時試 −1／0／+1 分鐘位移，檢查時間標記是否一致。"""
+    from datetime import datetime as _dt
+    res = {}
+    for shift in (-1, 0, 1):
+        same = n = 0
+        diffs = []
+        for r in new_rows:
+            t = (_dt.strptime(r[0], "%Y-%m-%d %H:%M") + timedelta(minutes=shift)).strftime("%Y-%m-%d %H:%M")
+            b = old.get(t)
+            if not b:
+                continue
+            n += 1
+            d = abs(r[4] - b["close"])
+            diffs.append(d)
+            same += d < 1e-9
+        res[shift] = {"n": n, "same_pct": round(same * 100 / n, 1) if n else None,
+                      "mean_abs": round(sum(diffs) / n, 2) if n else None, "max_abs": max(diffs) if diffs else None}
+    return res

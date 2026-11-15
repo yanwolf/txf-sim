@@ -215,6 +215,15 @@
       <div class="bar" id="hist-bar" style="display:none"><div id="hist-fill"></div></div>
       <div id="hist-sum" class="desc" style="margin-top:8px"></div>
       <div id="hist-months"></div>
+      <h4 style="margin:14px 0 4px">從永豐 API 補缺口</h4>
+      <div class="desc">MC 資料缺的區段，用已登入的永豐帳號抓台指期連續月（TXFR1）1 分 K 補進來，時間標記跟即時回補一致。預設只補「沒有資料的分鐘」，不動原本的 MC 資料。起訖建議前後各多抓一週，會自動拿重疊的那段跟 MC 比對，確認兩邊對得上。</div>
+      <div class="row">
+        <label>起 <input type="date" id="sj-start" value="2023-12-18"></label>
+        <label>迄 <input type="date" id="sj-end" value="2024-06-14"></label>
+        <label><input type="checkbox" id="sj-over"> 覆蓋已有資料</label>
+        <button id="sj-go" onclick="sjFill()">從永豐補資料</button>
+      </div>
+      <div id="sj-msg" style="font-size:13px"></div>
     </div>
     <div class="card">
       <h3>回測條件</h3>
@@ -530,6 +539,33 @@ async function saveConfig(){
 // ============ 歷史資料匯入 ============
 let HIST_STOP=false;
 const CHUNK=2*1024*1024;
+async function sjFill(){
+  const body={start:$('sj-start').value,end:$('sj-end').value,overwrite:$('sj-over').checked};
+  if(body.overwrite&&!confirm('會用永豐的資料覆蓋這段已有的 MC 資料，確定？'))return;
+  const r=await fetch('/api/hist/shioaji',{method:'POST',headers:hdr(),body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>({ok:false,error:'連線失敗'}));
+  if(!r.ok){$('sj-msg').innerHTML=`<span class="st-bad">${r.error||'無法開始'}</span>`;return;}
+  $('sj-go').disabled=true; sjPoll();
+}
+async function sjPoll(){
+  const d=await fetch('/api/hist/shioaji',{headers:hdr()}).then(r=>r.json()).catch(()=>null);
+  if(!d){setTimeout(sjPoll,2000);return;}
+  if(d.running){$('sj-msg').innerHTML='抓取中…<br>'+d.log.join('<br>');setTimeout(sjPoll,1500);return;}
+  $('sj-go').disabled=false;
+  if(d.error){$('sj-msg').innerHTML=`<span class="st-bad">${d.error}</span>`;return;}
+  const x=d.result; if(!x){$('sj-msg').innerHTML='';return;}
+  const c=x.compare, best=Object.entries(c).filter(([k,v])=>v.n).sort((a,b)=>b[1].same_pct-a[1].same_pct)[0];
+  let cmp='沒有和 MC 重疊的區段，無法比對（建議起訖前後各多抓一週再跑一次，只會補缺的部分）';
+  if(best){
+    const z=c[0];
+    cmp=`和 MC 重疊 ${z.n.toLocaleString()} 根：收盤價完全相同 <b>${z.same_pct}%</b>，平均差 ${z.mean_abs} 點、最大差 ${z.max_abs} 點`;
+    if(best[0]!=='0'&&best[1].same_pct>(z.same_pct||0)+20)cmp+=`<br><span class="st-bad">⚠️ 位移 ${best[0]} 分鐘時吻合度 ${best[1].same_pct}% 更高，時間標記可能差一分鐘，先別拿來回測，把這段訊息傳給我</span>`;
+    else if(z.same_pct>=90)cmp+='　<span class="st-ok">✓ 對得上</span>';
+    else cmp+='　<span class="st-warn">吻合度偏低，可能是兩邊的連續月換月時點不同，先看是不是集中在結算週</span>';
+  }
+  $('sj-msg').innerHTML=`永豐回傳 ${x.fetched.toLocaleString()} 根（${x.first} ～ ${x.last}），寫入 <b>${x.inserted.toLocaleString()}</b> 根${x.overwrite?'（覆蓋模式）':'（只補缺的）'}：`+
+    Object.entries(x.months).map(([m,n])=>`${m} ${n.toLocaleString()}`).join('、')+`<br>${cmp}`;
+  histSummary();
+}
 async function histSummary(){
   const d=await fetch('/api/hist/summary',{headers:hdr()}).then(r=>r.json()).catch(()=>null);
   if(!d)return;
