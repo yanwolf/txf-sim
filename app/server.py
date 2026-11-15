@@ -264,6 +264,48 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"days": out, "sessions": ses}); return
         elif u.path == "/api/hist/shioaji":
             self._send(200, {**SJ_JOB, "log": SJ_JOB["log"][-8:]})
+        elif u.path == "/api/export":
+            if not _authed(self):
+                self._send(401, {"error": "需要先登入"}); return
+            import csv, io, zipfile
+            from .db import DB_
+            tables = {
+                "signals": "SELECT t,side,price,reason FROM signals ORDER BY t",
+                "orders": "SELECT id,t,code,action,qty,price,status,filled_qty,avg_price,msg,reason,mode,broker_id "
+                          "FROM orders ORDER BY t",
+                "fills": "SELECT t,order_id,code,action,price,qty FROM fills ORDER BY t",
+                "events": "SELECT t,level,msg FROM events ORDER BY t",
+            }
+            heads = {"signals": "t,side,price,reason", "fills": "t,order_id,code,action,price,qty",
+                     "orders": "id,t,code,action,qty,price,status,filled_qty,avg_price,msg,reason,mode,broker_id",
+                     "events": "t,level,msg"}
+            buf = io.BytesIO()
+            counts = {}
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                for name, sql in tables.items():
+                    rows = DB_.run(sql, fetch=True) or []
+                    counts[name] = len(rows)
+                    sio = io.StringIO()
+                    w = csv.writer(sio)
+                    w.writerow(heads[name].split(","))
+                    w.writerows(rows)
+                    z.writestr(f"{name}.csv", "\ufeff" + sio.getvalue())
+                from .portfolio import PORTFOLIO
+                z.writestr("config.json", json.dumps(PORTFOLIO.effective_config(), ensure_ascii=False, indent=2))
+                z.writestr("README.txt",
+                           "txf-sim 紀錄匯出\n"
+                           "signals.csv：各策略帳本的進出場（reason 開頭 [策略名]，·實驗＝paper），price 為策略帳本價\n"
+                           "orders.csv：送到券商的委託（淨部位），fills.csv：券商回報的實際成交\n"
+                           "events.csv：系統事件日誌，config.json：匯出當下的策略設定\n"
+                           + "".join(f"{k}: {v} 筆\n" for k, v in counts.items()))
+            data = buf.getvalue()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="txf-sim-export-{time.strftime("%Y%m%d")}.zip"')
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data); return
         elif u.path == "/api/hist/summary":
             from .db import DB_
             ys = DB_.hist_summary()

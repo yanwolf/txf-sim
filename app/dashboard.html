@@ -262,6 +262,11 @@
       <div class="desc">輸入密碼後才能儲存設定與使用 Kill / 平倉 / 恢復 / 以券商為準。</div>
       <div class="row"><input type="password" id="pw" placeholder="密碼" onkeydown="if(event.key==='Enter')login()"><button class="primary" onclick="login()">登入</button><span id="auth-msg"></span></div>
     </div>
+    <div class="card">
+      <h3>匯出交易紀錄</h3>
+      <div class="desc">把資料庫裡全部的策略訊號、委託、成交、事件日誌和目前設定打包成一個 zip 下載，用來跟回測對照。需要先登入。</div>
+      <div class="row"><button class="primary" onclick="exportAll()">下載全部紀錄（zip）</button><span id="exp-msg" style="font-size:13px"></span></div>
+    </div>
     <div class="card" id="hol-card">
       <h3>休市日</h3>
       <div class="desc">一行一個或用逗號分隔，格式 2026-10-09。休市前一交易日 13:40 起出場並停止進場，休市當天不送單、不因沒行情而重連。儲存立即生效，不需重啟。</div>
@@ -539,6 +544,15 @@ async function saveConfig(){
 // ============ 歷史資料匯入 ============
 let HIST_STOP=false;
 const CHUNK=2*1024*1024;
+async function exportAll(){
+  $('exp-msg').textContent='打包中…';
+  const r=await fetch('/api/export',{headers:hdr()}).catch(()=>null);
+  if(!r||!r.ok){$('exp-msg').innerHTML=`<span class="st-bad">${r&&r.status===401?'請先登入':'匯出失敗'}</span>`;return;}
+  const b=await r.blob(); const a=document.createElement('a');
+  a.href=URL.createObjectURL(b); a.download=`txf-sim-export-${new Date().toISOString().slice(0,10).replace(/-/g,'')}.zip`;
+  document.body.appendChild(a); a.click(); a.remove();
+  $('exp-msg').textContent=`完成（${(b.size/1024).toFixed(0)} KB）`;
+}
 async function sjFill(){
   const body={start:$('sj-start').value,end:$('sj-end').value,overwrite:$('sj-over').checked};
   if(body.overwrite&&!confirm('會用永豐的資料覆蓋這段已有的 MC 資料，確定？'))return;
