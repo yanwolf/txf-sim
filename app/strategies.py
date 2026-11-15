@@ -171,6 +171,24 @@ class ARCrossunder2025(Strategy):
                 f"AvgRange({int(p['ATRN'])})": self.avgrange(p["ATRN"]), "進場軌 MA−AR×ATRX": self._band(0),
                 "今日進場次數": self.entries_today, "結算日": self.checkday}
 
+def _ma_trend(st, fast, slow):
+    """GuYuan 系列共用的趨勢濾網。slow<=0 或 fast>=slow 視為關閉，回 None；
+    否則回 (快線, 慢線)。fast=1 就是直接拿收盤價跟慢線比。"""
+    fast, slow = int(fast), int(slow)
+    if slow <= 0 or fast >= slow:
+        return None
+    return st.average(st.C, max(1, fast)), st.average(st.C, slow)
+
+
+def _trend_debug(st, p, up):
+    tr = _ma_trend(st, p.get("MA1", 1), p.get("MA2", 0))
+    if tr is None:
+        return {"趨勢濾網": "關閉"}
+    ok = tr[0] > tr[1] if up else tr[0] < tr[1]
+    return {f"快線 MA{int(p['MA1'])}": tr[0], f"慢線 MA{int(p['MA2'])}": tr[1],
+            "趨勢濾網": ("多頭排列，可做多" if up else "空頭排列，可放空") if ok else "不成立，暫停進場"}
+
+
 class GuYuan2024(Strategy):
     """sb_b21GuYuan_2024：只做多。週高/時段收/區間中值合成價，N 根最高 stop 進場，N 根最低 stop 出場。"""
     name = "GuYuan_2024"
@@ -178,17 +196,20 @@ class GuYuan2024(Strategy):
     minutes = 60
     doc = dict(N1="幾週前的週高/週低", N2="幾個時段前的收盤", N3="區間中值的期數", HH="進場：幾根最高價",
                LL="出場：幾根最低價", LOSS="停損點數", WIN="停利點數", Twin="啟動移動停利的最大浮盈",
-               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）")
-    inputs = dict(N1=1, N2=1, N3=1, HH=10, LL=10, LOSS=50, WIN=250, Twin=50, Tstop=200, TNw=430)
+               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）",
+               MA1="趨勢濾網快線期數（1＝直接用收盤價）", MA2="趨勢濾網慢線期數（0＝關閉；開啟時只在快線>慢線才做多）")
+    inputs = dict(N1=1, N2=1, N3=1, HH=10, LL=10, LOSS=50, WIN=250, Twin=50, Tstop=200, TNw=430, MA1=1, MA2=0)
 
     def on_bar(self):
         p = self.p
         mid = (self.highest(self.C, p["N3"]) + self.lowest(self.C, p["N3"])) * 0.5
         value1 = (self.highW(p["N1"]) + self.closeS(p["N2"]) + mid) / 3
         value2 = (self.lowW(p["N1"]) + self.closeS(p["N2"]) + mid) / 3
+        tr = _ma_trend(self, p.get("MA1", 1), p.get("MA2", 0))
+        trend_ok = tr is None or tr[0] > tr[1]          # 濾網只管進場，不影響出場
 
-        # IF MP<>1 and H>value1 then buy next bar at highest(H,HH) stop;
-        if self.mp != 1 and self.H() > value1:
+        # IF MP<>1 and H>value1 [and 快線>慢線] then buy next bar at highest(H,HH) stop;
+        if self.mp != 1 and self.H() > value1 and trend_ok:
             self.buy_stop(self.highest(self.H, p["HH"]), "N 根最高突破")
         # IF MP=1 and L<value2 then sell next bar at lowest(L,LL) stop;
         if self.mp == 1 and self.L() < value2:
@@ -217,6 +238,7 @@ class GuYuan2024(Strategy):
                 f"週低({int(p['N1'])})": self.lowW(p["N1"]), f"時段收({int(p['N2'])})": self.closeS(p["N2"]),
                 "區間中值": mid, "進場價 value1": v1, "出場價 value2": v2,
                 f"最高({int(p['HH'])}根)": self.highest(self.H, p["HH"]), f"最低({int(p['LL'])}根)": self.lowest(self.L, p["LL"]),
+                **_trend_debug(self, p, up=True),
                 "結算日": self.checkday}
 
 
@@ -273,8 +295,9 @@ class GuYuan2024Short(Strategy):
     minutes = 60
     doc = dict(N1="幾週前的週高/週低", N2="幾個時段前的收盤", N3="區間中值的期數", LL="進場：幾根最低價",
                HH="出場：幾根最高價", LOSS="停損點數", WIN="停利點數", Twin="啟動移動停利的最大浮盈",
-               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）")
-    inputs = dict(N1=1, N2=1, N3=1, HH=10, LL=10, LOSS=50, WIN=250, Twin=50, Tstop=200, TNw=430)
+               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）",
+               MA1="趨勢濾網快線期數（1＝直接用收盤價）", MA2="趨勢濾網慢線期數（0＝關閉；開啟時只在快線<慢線才放空）")
+    inputs = dict(N1=1, N2=1, N3=1, HH=10, LL=10, LOSS=50, WIN=250, Twin=50, Tstop=200, TNw=430, MA1=1, MA2=0)
 
     def _values(self):
         p = self.p
@@ -286,9 +309,11 @@ class GuYuan2024Short(Strategy):
     def on_bar(self):
         p = self.p
         _, value1, value2 = self._values()
+        tr = _ma_trend(self, p.get("MA1", 1), p.get("MA2", 0))
+        trend_ok = tr is None or tr[0] < tr[1]          # 濾網只管進場，不影響出場
 
-        # 鏡像：IF MP<>-1 and L<value2 then sellshort next bar at lowest(L,LL) stop;
-        if self.mp != -1 and self.L() < value2:
+        # 鏡像：IF MP<>-1 and L<value2 [and 快線<慢線] then sellshort next bar at lowest(L,LL) stop;
+        if self.mp != -1 and self.L() < value2 and trend_ok:
             self.sellshort_stop(self.lowest(self.L, p["LL"]), "N 根最低跌破")
         # 鏡像：IF MP=-1 and H>value1 then buytocover next bar at highest(H,HH) stop;
         if self.mp == -1 and self.H() > value1:
@@ -314,7 +339,7 @@ class GuYuan2024Short(Strategy):
                 f"週低({int(p['N1'])})": self.lowW(p["N1"]), f"時段收({int(p['N2'])})": self.closeS(p["N2"]),
                 "區間中值": mid, "進場價 value2": v2, "出場價 value1": v1,
                 f"最低({int(p['LL'])}根)": self.lowest(self.L, p["LL"]), f"最高({int(p['HH'])}根)": self.highest(self.H, p["HH"]),
-                "結算日": self.checkday}
+                **_trend_debug(self, p, up=False), "結算日": self.checkday}
 
 
 class GuYuan2025Short(Strategy):
