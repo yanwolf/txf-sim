@@ -22,6 +22,28 @@
       "EBX": 0
     }
   },
+  "TMFF_N40": {
+    "enabled": true,
+    "mode": "paper",
+    "minutes": 60,
+    "lots": 1,
+    "inputs": {
+      "N": 40,
+      "BB": 2.4,
+      "SS": 0.5,
+      "SWing": 1,
+      "BLOSS": 125,
+      "BWIN": 300,
+      "SLOSS": 75,
+      "SWIN": 250,
+      "BMax": 200,
+      "BTB": 100,
+      "SMax": 100,
+      "STB": 150,
+      "TNw": 330,
+      "EBX": 2
+    }
+  },
   "AR_crossover_2025": {
     "enabled": true,
     "mode": "live",

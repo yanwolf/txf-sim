@@ -386,6 +386,13 @@ class GuYuan2025Short(Strategy):
                 "今日進場次數": self.entries_today, "結算日": self.checkday}
 
 
+class TMFF_N40(TMFF):
+    """TMFF 的 paper 分身：邏輯完全相同，只用不同參數（預設 N=40），跟 live 的 TMFF 並行比較。
+    2026-11 參數掃描：N=40 樣本外明顯較好，但樣本內與 N=30 打平、N=50 是懸崖 → 先 paper 觀察半年再決定。"""
+    name = "TMFF_N40"
+    desc = "TMFF 的 paper 分身（N=40），跟 live 的 TMFF（N=30）並行比較用；邏輯與 TMFF 完全相同"
+
+
 # ⚠️ 指標參數（LADDER/OPENRULE/OPENVOL/AVL_RESET/MA1/MA2）已校準鎖定，見 ORBIT_HANDOFF.md；改進請加新參數，預設維持現行行為
 class GapTracker:
     """日 K 奇襲缺口追蹤（v3 Orbit_gap 與 v1 的 USE_GAP 濾網共用，不要各寫一份）。
@@ -797,6 +804,7 @@ class DemoMA(Strategy):
 
 REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, ARCrossunder2025, GuYuan2024, GuYuan2025,
                                   GuYuan2024Short, GuYuan2025Short,
+                                  TMFF_N40,
                                   OrbitCost30, OrbitGap, DemoMA)}
 
 # 進場 K 災難停損（EBX）是 el.Strategy 的共用機制：每支策略都加這個參數，預設 0＝關閉、行為與 MC 一致。
