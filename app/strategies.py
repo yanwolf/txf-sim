@@ -518,7 +518,7 @@ class OrbitCost30(Strategy):
     參數與 App 對照、校準方式見 orbit.py 註解。預設 paper 模式，不下單。
     """
     name = "Orbit_cost30"
-    version = "v1.3"          # v1.1 反手停損重設；v1.2 USE_GAP；v1.3 VOLSCALE（TOUCH/BUF/MAXLOSS 綁 30 分 K 波動度，預設關）
+    version = "v1.4"          # v1.1 反手停損重設；v1.2 USE_GAP；v1.3 VOLSCALE；v1.4 BE_PCT 保本停損（預設關）
     desc = "軌道鞅 v1：30 分 K 大量紅黑 K 階梯（多空成本）+ 大小流氓濾網 + 公道伯，回測有守/頂底被破進場"
     minutes = 30
     doc = dict(LADDER="階梯算法：0=開盤法（對照 App）、1=量倍數法", AVL_RESET="公道伯歸零：0=結算日收盤後、1=每月、2=結算日開盤", OPENVOL="開盤法量門檻（口，0=不限）", OPENRULE="開盤法判定：0=只看收盤、1=跳空確認",
@@ -533,11 +533,12 @@ class OrbitCost30(Strategy):
                GAP_MIN="缺口最小點數（0=不限）", GAP_DAYS="缺口有效日 K 數（0=不限，只影響 USE_GAP=2）",
                VOLSCALE="0=TOUCH/BUF/MAXLOSS 用固定點數（舊）、1=改用 30 分 K 波動度 AR 的倍數",
                VOL_N="AR＝最近幾根 30 分 K 的平均振幅（高−低）", K_TOUCH="VOLSCALE=1：TOUCH＝AR×此倍數",
-               K_BUF="VOLSCALE=1：BUF＝AR×此倍數", K_MAXLOSS="VOLSCALE=1：MAXLOSS＝AR×此倍數")
+               K_BUF="VOLSCALE=1：BUF＝AR×此倍數", K_MAXLOSS="VOLSCALE=1：MAXLOSS＝AR×此倍數",
+               BE_PCT="保本停損：最大浮盈達進場價的幾 %，停損移到保本（0=關閉）", BE_OFF="保本停損：進場價外再加幾點（蓋成本）")
     inputs = dict(LADDER=0, AVL_RESET=2, OPENVOL=0, OPENRULE=1, VOLN=20, VOLX=2.0, BODY=0, DAYONLY=0, MA1=20, MA2=40, USE_AVL=1, SIDE=0, ENTRY=3,
                   TOUCH=20, BUF=10, MAXLOSS=150, TP_PCT=1.2, EXIT_OPP=1, ETD=2, TNw=330,
                   USE_GAP=0, GAP_DAYMODE=1, GAP_MODE=1, GAP_MIN=0, GAP_DAYS=0,
-                  VOLSCALE=0, VOL_N=200, K_TOUCH=0.5, K_BUF=0.25, K_MAXLOSS=3.0)
+                  VOLSCALE=0, VOL_N=200, K_TOUCH=0.5, K_BUF=0.25, K_MAXLOSS=3.0, BE_PCT=0, BE_OFF=10)
 
     def __init__(self, cfg):
         super().__init__(cfg)
@@ -599,10 +600,12 @@ class OrbitCost30(Strategy):
             if self.mp == 0:
                 self.pos_stop = None
                 self.stop_moved = False
+                self.be_on = False
             elif self.mp_prev != 0 and (self.mp > 0) != (self.mp_prev > 0):
                 # 反手（多翻空／空翻多）：舊方向的停損價不能沿用，改用新部位的 pending_ref 重算
                 self.pos_stop = None
                 self.stop_moved = False
+                self.be_on = False
 
         # ---- 進場
         can = day_ok and self.entries_today < p["ETD"]
@@ -629,7 +632,13 @@ class OrbitCost30(Strategy):
             if c.long_ladder and c.long_ladder < C and c.long_ladder - buf > self.pos_stop:
                 self.pos_stop = c.long_ladder - buf          # 停利點往上設
                 self.stop_moved = True
-            self.sell_stop(self.pos_stop, "階梯停損（已上移）" if self.stop_moved else "階梯停損（原始）")
+            be_pct = float(p.get("BE_PCT", 0) or 0)
+            if be_pct > 0 and self.maxprofit_pts >= self.entryprice * be_pct / 100:
+                be = self.entryprice + float(p.get("BE_OFF", 10))
+                if be > self.pos_stop:
+                    self.pos_stop = be; self.stop_moved = True; self.be_on = True
+            self.sell_stop(self.pos_stop, "保本停損" if getattr(self, "be_on", False) and self.pos_stop == self.entryprice + float(p.get("BE_OFF", 10))
+                           else ("階梯停損（已上移）" if self.stop_moved else "階梯停損（原始）"))
             if p["TP_PCT"]:
                 self.sell_limit(self.entryprice * (1 + p["TP_PCT"] / 100), "滿足點")
             if int(p["EXIT_OPP"]) and c.big == -1:
@@ -641,7 +650,13 @@ class OrbitCost30(Strategy):
             if c.short_ladder and c.short_ladder > C and c.short_ladder + buf < self.pos_stop:
                 self.pos_stop = c.short_ladder + buf         # 停利點往下設
                 self.stop_moved = True
-            self.buytocover_stop(self.pos_stop, "階梯停損（已下移）" if self.stop_moved else "階梯停損（原始）")
+            be_pct = float(p.get("BE_PCT", 0) or 0)
+            if be_pct > 0 and self.maxprofit_pts >= self.entryprice * be_pct / 100:
+                be = self.entryprice - float(p.get("BE_OFF", 10))
+                if be < self.pos_stop:
+                    self.pos_stop = be; self.stop_moved = True; self.be_on = True
+            self.buytocover_stop(self.pos_stop, "保本停損" if getattr(self, "be_on", False) and self.pos_stop == self.entryprice - float(p.get("BE_OFF", 10))
+                                 else ("階梯停損（已下移）" if self.stop_moved else "階梯停損（原始）"))
             if p["TP_PCT"]:
                 self.buytocover_limit(self.entryprice * (1 - p["TP_PCT"] / 100), "滿足點")
             if int(p["EXIT_OPP"]) and c.big == 1:
