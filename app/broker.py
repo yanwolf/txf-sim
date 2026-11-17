@@ -211,6 +211,12 @@ class Broker:
                 return
         target = self._entry_gate(pos, target, price, reason)
         delta = target - pos
+        if self.pending and MODE != "signal":
+            # 有委託在途時，pos 還沒反映那張單 → 不能用 delta==0 判斷「不用動」。
+            # 一律記成 deferred，等在途單成交後再用最新部位重算（若已一致就不會送單）。
+            STATE.log("WARN", f"前一張委託 {self.pending} 未完成，先記下新目標 {target}，成交後再對（{reason}）")
+            self._deferred = (target, price, reason)
+            return
         if delta == 0:
             return
         if abs(pos) > MAX_POSITION:

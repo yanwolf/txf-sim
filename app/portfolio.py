@@ -32,6 +32,7 @@ class Portfolio:
         self.first_tick = {}       # minutes -> 下一筆 tick 是新 K 第一筆
         self.ready = False
         self.align_pending = False
+        self._batch = None             # on_tick 期間收集的 live 訊號
         self._last_sync = 0.0
         self._baseline_net = None      # STARTUP_ALIGN=false 時：開機當下的策略淨部位，不追這筆
         self.load_config()
@@ -197,10 +198,14 @@ class Portfolio:
                                   "；".join(f"{o.action} {o.kind} {o.price if o.price else ''} {o.label}" for o in s.orders if s._valid(o)))
             ses = tf.session_of(tf.parse_ts(closed_bar["ts"]))
             if ses and ses[3] and m1_end >= ses[2]:
-                for s in self.strategies:
-                    r = s.exit_at_close(closed_bar["close"])
-                    if r:
-                        self._fill(s, *r)
+                self._batch = []
+                try:
+                    for s in self.strategies:
+                        r = s.exit_at_close(closed_bar["close"])
+                        if r:
+                            self._fill(s, *r)
+                finally:
+                    self._flush_batch(closed_bar["close"])
             self._persist()
 
     def on_tick(self, price):
@@ -235,13 +240,17 @@ class Portfolio:
                         pass                        # 開機時就有的部位，照設定不追
                     elif BROKER.ready and not kill and not halted and not pending and pos != net:
                         self._send_net(price, "部位對齊")
-            for m, strats in self.by_tf.items():
-                for s in strats:
-                    key = (m, s.name)
-                    r = s.on_tick(price, self.first_tick.get(key, False), now())
-                    self.first_tick[key] = False
-                    if r:
-                        self._fill(s, *r)
+            self._batch = []
+            try:
+                for m, strats in self.by_tf.items():
+                    for s in strats:
+                        key = (m, s.name)
+                        r = s.on_tick(price, self.first_tick.get(key, False), now())
+                        self.first_tick[key] = False
+                        if r:
+                            self._fill(s, *r)
+            finally:
+                self._flush_batch(price)
 
     def _fill(self, s, action, price, label):
         side = {"buy": "多", "sellshort": "空", "sell": "平多", "buytocover": "平空"}[action]
@@ -253,8 +262,17 @@ class Portfolio:
             if self._baseline_net is not None:
                 # 開機時沒追的部位：策略出場時帳戶本來就沒有，不必送單；新進場則照常
                 self._baseline_net = None
-            self._send_net(price, f"[{s.name}] {label}")
+            if self._batch is not None:
+                self._batch.append(f"[{s.name}] {label}")   # 同一個 tick 內的其他策略也可能動，先收齊再一次送淨部位
+            else:
+                self._send_net(price, f"[{s.name}] {label}")
         self._persist()
+
+    def _flush_batch(self, price):
+        """同一個 tick 內所有策略都處理完，才依最終淨部位送一張單（避免 A 進場先送單、B 出場時單還在途而漏送）。"""
+        reasons, self._batch = self._batch, None
+        if reasons:
+            self._send_net(price, "＋".join(reasons))
 
     def net(self):
         return sum(s.mp * s.lots for s in self.strategies if s.mode != "paper")
