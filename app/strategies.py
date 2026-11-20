@@ -827,3 +827,7 @@ REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, ARCrossunder2025, GuYuan2
 for _c in REGISTRY.values():
     _c.inputs = {**_c.inputs, "EBX": _c.inputs.get("EBX", 0)}
     _c.doc = {**_c.doc, "EBX": _c.doc.get("EBX", "進場K災難停損：AvgRange(200) 的倍數，只在進場那根 K 有效（0 = 關閉，與 MC 一致）")}
+    _c.inputs = {**_c.inputs, "EBT": _c.inputs.get("EBT", 0), "EBT_GB": _c.inputs.get("EBT_GB", 0.5)}
+    _c.doc = {**_c.doc,
+              "EBT": "進場K保護利潤：進場那根 K 內浮盈達 AvgRange(200)×此倍數就啟動移動停利（0 = 關閉，與 MC 一致）",
+              "EBT_GB": "進場K保護利潤：啟動後允許回吐 AvgRange(200)×此倍數（只在進場那根 K 有效）"}

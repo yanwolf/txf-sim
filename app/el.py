@@ -81,6 +81,10 @@ class Strategy:
         # EBX>0 時進場成交當下掛一張 AvgRange(200)×EBX 的觸價停損，只在進場那根 K 有效
         self.ebx_dist = None      # 上一根收盤算好的距離（點）
         self.ebx_stop = None      # 目前生效的災難停損價
+        self.ar_entry = None      # 上一根收盤算好的 AvgRange(200)，給 EBT 用
+        self.ebt_on = False       # 目前是否在「進場那根 K」內
+        self.ebt_mfe = 0.0        # 進場那根 K 內的最大浮盈
+        self.ebt_stop = None      # 進場K保護利潤的移動停損價
         # 資料
         self.bars = []
         self.sessions = []
@@ -259,6 +263,8 @@ class Strategy:
         self.ebx_stop = None      # 進場那根結束，交回策略自己的停損
         ebx = float(self.p.get("EBX", 0) or 0)
         self.ebx_dist = self.avgrange(200) * ebx if ebx > 0 and len(bars) >= 2 else None
+        self.ebt_on = False; self.ebt_stop = None; self.ebt_mfe = 0.0
+        self.ar_entry = self.avgrange(200) if float(self.p.get("EBT", 0) or 0) > 0 and len(bars) >= 2 else None
         if self.enabled:
             try:
                 self.on_bar()
@@ -314,6 +320,23 @@ class Strategy:
                 self.ebx_stop = None
                 self.orders = []
                 return (action, fill, "進場K災難停損")
+        if self.ebt_on and self.mp != 0 and self.entryprice is not None and self.ar_entry:
+            fav = (price - self.entryprice) if self.mp > 0 else (self.entryprice - price)
+            self.ebt_mfe = max(self.ebt_mfe, fav)
+            if self.ebt_mfe >= self.ar_entry * float(self.p.get("EBT", 0)):
+                lock = self.ebt_mfe - self.ar_entry * float(self.p.get("EBT_GB", 0.5))
+                st = self.entryprice + lock if self.mp > 0 else self.entryprice - lock
+                if self.ebt_stop is None or (st > self.ebt_stop if self.mp > 0 else st < self.ebt_stop):
+                    self.ebt_stop = st
+            if self.ebt_stop is not None:
+                hit = price <= self.ebt_stop if self.mp > 0 else price >= self.ebt_stop
+                if hit:
+                    action = "sell" if self.mp > 0 else "buytocover"
+                    fill = self.ebt_stop
+                    self._apply(action, fill)
+                    self.ebt_on = False; self.ebt_stop = None; self.ebx_stop = None
+                    self.orders = []
+                    return (action, fill, "進場K保護利潤")
         if self.filled_this_bar or not self.orders:
             return None
         for o in self.orders:
@@ -334,6 +357,8 @@ class Strategy:
                 self.orders = []
                 if o.action in ("buy", "sellshort") and self.ebx_dist:
                     self.ebx_stop = fill - self.ebx_dist if self.mp > 0 else fill + self.ebx_dist
+                if o.action in ("buy", "sellshort") and self.ar_entry:
+                    self.ebt_on = True; self.ebt_mfe = 0.0; self.ebt_stop = None
                 return (o.action, fill, o.label)
         return None
 
@@ -406,7 +431,9 @@ class Strategy:
                            for o in self.orders if self._valid(o)]
                           + ([{"kind": "stop", "action": "buytocover" if self.mp < 0 else "sell",
                                "price": self.ebx_stop, "label": "進場K災難停損"}]
-                             if self.ebx_stop is not None and self.mp != 0 else []),
+                             if self.ebx_stop is not None and self.mp != 0 else [])
+                          + ([{"kind": "stop", "action": "buytocover" if self.mp < 0 else "sell", "price": round(self.ebt_stop, 1), "label": "進場K保護利潤"}]
+                             if self.ebt_stop is not None and self.mp != 0 else []),
                 "inputs": self.p, "doc": self.doc, "desc": self.desc,
                 "debug": self._safe_debug()}
 
