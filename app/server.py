@@ -463,7 +463,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/kill":
             BROKER.kill("手動")
         elif u.path == "/api/resume":
-            BROKER.resume()
+            BROKER.resume(chase=True)
+        elif u.path == "/api/resume_nochase":
+            BROKER.resume(chase=False)
         elif u.path == "/api/flat":
             BROKER.flatten("手動平倉")
         elif u.path == "/api/reconcile":

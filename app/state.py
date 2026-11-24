@@ -158,6 +158,7 @@ class State:
                 "kill_reason": self.kill_reason,
                 "strategy_halted": self.strategy_halted,
                 "entry_block": self.entry_block,
+                "limit_wait": getattr(__import__("app.broker", fromlist=["BROKER"]).BROKER, "limit_wait", None),
                 "daily_loss_mode": __import__("app.broker", fromlist=["DAILY_LOSS_MODE"]).DAILY_LOSS_MODE,
                 "db": self.db,
                 "telegram": __import__("app.notify", fromlist=["enabled"]).enabled(),

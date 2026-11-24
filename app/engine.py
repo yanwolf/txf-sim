@@ -297,6 +297,8 @@ class Engine:
                     "reference": num(g("reference")),
                     "limit_up": num(g("limit_up")),
                     "limit_down": num(g("limit_down")),
+                    # 漲跌停價屬於哪個時段：換到下一個時段（夜盤歸下一交易日）就不再信任這組數字
+                    "limit_session": (tf_session_of(now().replace(tzinfo=None)) or (None,))[0],
                 }
                 if STATE.contract["reference"]:
                     n_ = now()

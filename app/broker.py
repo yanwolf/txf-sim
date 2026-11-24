@@ -83,6 +83,11 @@ def _net_from_positions(positions, order_code):
     return net, rows, avg, by_code
 
 
+def tf_session_of_now():
+    from .tf import session_of
+    return session_of(now().replace(tzinfo=None))
+
+
 class Broker:
     def __init__(self):
         self.lock = threading.RLock()
@@ -99,6 +104,7 @@ class Broker:
         self._mismatch_streak = 0
         self._deferred = None      # pending 時來的新目標，成交後補送
         self._block_logged = None  # 停止新進場時，同一個目標只記一次 log
+        self.limit_wait = None     # 卡在漲跌停、等打開再補單的原因
         self.no_chase = False      # 停止新進場解除後，portfolio 不追策略手上的舊部位
         self.ready = False         # 下單層就緒且已完成啟動對帳
         self._last_fill_ts = 0.0
@@ -452,10 +458,43 @@ class Broker:
         self.persist()
 
     # ------------------------------------------------------------ 送單
+    def _limit_locked(self, buy):
+        """這個方向是否卡在漲跌停（買卡漲停、賣卡跌停）。回傳原因字串或 None。
+        1) 合約檔漲跌停價（只在載入的同一個時段內才信任）
+        2) 沒有可信的漲跌停價時：價格停在本時段最高（買）／最低（賣）也視為鎖住"""
+        with STATE.lock:
+            px, c = STATE.last_price, dict(STATE.contract or {})
+            hi, lo = STATE.day_high, STATE.day_low
+        if px is None:
+            return None
+        from .tf import session_of
+        cur = (session_of(now().replace(tzinfo=None)) or (None,))[0]
+        lim = c.get("limit_up") if buy else c.get("limit_down")
+        if lim and c.get("limit_session") == cur:
+            if (buy and px >= lim) or (not buy and px <= lim):
+                return f"{'漲' if buy else '跌'}停 {lim:.0f}"
+            return None
+        ext = hi if buy else lo
+        if ext is not None and px == ext:
+            return f"價格停在本盤{'最高' if buy else '最低'} {px:.0f}（疑似{'漲' if buy else '跌'}停鎖住）"
+        return None
+
     def _place(self, delta, ref_price, reason, retry=0, octype="Auto", then=None, contract=None, roll=False):
         if not in_session(now()) or STATE.session_note:
             STATE.log("WARN", f"非交易時段或推定休市，不送單（{reason}）")
             return
+        lk = self._limit_locked(delta > 0)
+        c = STATE.contract or {}
+        if lk and c.get("limit_session") == (tf_session_of_now() or (None,))[0]:
+            # 確定鎖在漲跌停板：市價 IOC 一定被取消，先不送，部位對齊每 60 秒會再試，打開後自動補單
+            if self.limit_wait != lk:
+                STATE.log("WARN", f"{lk}，暫不送單（{reason}）；打開後自動補單，不算委託失敗")
+                notify(f"⏸ {lk}，暫不送單：{reason}\n打開後自動補單", key="limit_wait", cooldown=1800)
+            self.limit_wait = lk
+            return
+        if self.limit_wait:
+            STATE.log("INFO", f"漲跌停已打開，補送委託（{reason}）")
+            self.limit_wait = None
         contract = contract or self.contract
         if self.api is None or contract is None or self.account is None or not self.ready:
             STATE.log("WARN", f"下單層尚未就緒，略過（{reason}）；就緒後會自動對齊")
@@ -659,13 +698,23 @@ class Broker:
         self._clear_pending(rec)
         STATE.log("WARN", f"委託 {rec['id']} 取消/未成交：{msg}")
         remaining = rec["qty"] - rec.get("filled_qty", 0)
-        if remaining > 0 and rec.get("retry", 0) < 1:
+        locked = (not rec.get("roll")) and self._limit_locked(rec["action"] == "Buy")
+        if remaining > 0 and rec.get("retry", 0) < 1 and not locked:
             STATE.log("INFO", "重送一次")
             delta = remaining if rec["action"] == "Buy" else -remaining
             self._place(delta, rec.get("price"), rec["reason"] + "（重送）", retry=1,
                         octype=rec.get("octype", "Auto"), then=rec.get("then"),
                         contract=rec.get("_contract"), roll=rec.get("roll", False))
         else:
+            lk = None if rec.get("roll") else self._limit_locked(rec["action"] == "Buy")
+            if lk:
+                # 漲跌停鎖死被取消：市場狀態，不是系統故障 → 不累計失敗、不停止策略，等打開後部位對齊自動補單
+                rec["then"] = None
+                self.limit_wait = lk
+                STATE.log("WARN", f"{lk}，委託未成交，不算委託失敗；打開後自動補單")
+                notify(f"⏸ {lk}，委託未成交：{rec['reason']}\n打開後自動補單", key="limit_wait", cooldown=1800)
+                self.persist()
+                return
             self.failures += 1
             if rec.get("roll"):
                 rec["then"] = None
@@ -905,16 +954,19 @@ class Broker:
         notify(f"🛑 kill switch：{reason}")
         self.persist()
 
-    def resume(self):
+    def resume(self, chase=True):
+        """chase=True：恢復後部位對齊會追到策略淨部位；False：不追場內舊部位，等下一個新訊號。"""
         with STATE.lock:
             STATE.kill, STATE.kill_reason = False, None
             STATE.strategy_halted = None
             had_block, STATE.entry_block = STATE.entry_block, None
-        if had_block:
+        if had_block or not chase:
             self.no_chase = True
             self._block_logged = None
         self.failures = 0
-        STATE.log("INFO", "已恢復（kill 關閉、策略停止解除、停止新進場解除、失敗計數歸零）")
+        self.limit_wait = None
+        STATE.log("INFO", "已恢復（kill 關閉、策略停止解除、停止新進場解除、失敗計數歸零）"
+                  + ("，不追場內舊部位，等下一個新訊號" if not chase else "，部位對齊會追到策略淨部位"))
         self.persist()
 
     def flatten(self, reason="手動平倉"):

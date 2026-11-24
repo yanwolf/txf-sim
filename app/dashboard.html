@@ -169,7 +169,8 @@
     <div class="ctl">
       <button id="btn-kill" class="danger" onclick="post('/api/kill','確定開啟 kill switch？之後所有訊號都會被忽略')">Kill switch</button>
       <button id="btn-flat" class="danger" onclick="post('/api/flat','確定用市價平掉目前部位？')">全部平倉</button>
-      <button id="btn-resume" onclick="post('/api/resume')">恢復</button>
+      <button id="btn-resume" onclick="post('/api/resume','恢復並對齊：如果策略帳本有部位、帳戶沒有，會立刻用市價追進場。確定？')">恢復並對齊</button>
+      <button id="btn-resume-nc" onclick="post('/api/resume_nochase','恢復但不追單：場內舊部位不補，等下一個新訊號。確定？')">恢復（不追單）</button>
       <button onclick="post('/api/reconcile')">立即對帳</button>
       <button id="btn-adopt" onclick="post('/api/adopt','確定把內部部位改成券商回報的數字？')">以券商為準</button>
     </div>
@@ -340,7 +341,7 @@ async function tick(){
     $('usage').textContent=s.usage?`${s.usage.bytes_mb} / ${s.usage.limit_mb} MB · ${s.usage.connections}`:'—';
     $('logins').textContent=`${s.login_count}（${s.last_login_at?s.last_login_at.slice(11,19):'—'}）`;
     $('deliv').textContent=s.contract?s.contract.delivery_date:'—';
-    $('btn-kill').disabled=s.kill; $('btn-resume').disabled=!(s.kill||s.strategy_halted||s.entry_block);
+    $('btn-kill').disabled=s.kill; $('btn-resume').disabled=!(s.kill||s.strategy_halted||s.entry_block); $('btn-resume-nc').disabled=$('btn-resume').disabled;
     $('btn-flat').disabled=!s.position;
     $('btn-adopt').disabled=!(s.reconcile_ok===false&&s.broker_position!=null);
 
@@ -349,6 +350,7 @@ async function tick(){
     if(s.in_session&&s.tick_age_sec!=null&&s.tick_age_sec>180){msgs.push(`盤中已 ${Math.round(s.tick_age_sec/60)} 分鐘沒有行情`);bad=true;}
     if(s.kill){msgs.push('kill switch 開啟：'+(s.kill_reason||''));bad=true;}
     if(s.strategy_halted){msgs.push('策略已停止：'+s.strategy_halted);bad=true;}
+    if(s.limit_wait) msgs.push('等待漲跌停打開：'+s.limit_wait+'（打開後自動補單）');
     if(s.entry_block) msgs.push('停止新進場：'+s.entry_block+'（手上部位照策略出場，下個交易日自動解除）');
     if(s.reconcile_ok===false&&s.mismatch_min>=3){msgs.push('內部部位與券商不一致已 '+s.mismatch_min+' 分鐘，確認後可按「以券商為準」');bad=true;}
     if(s.pending_order) msgs.push('委託 '+s.pending_order+' 進行中');

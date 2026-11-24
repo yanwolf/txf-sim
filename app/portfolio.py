@@ -236,6 +236,8 @@ class Portfolio:
                         if pos != net:
                             self._baseline_net = net
                             STATE.log("INFO", f"停止新進場已解除：策略淨部位 {net}、帳戶 {pos}，不追單，等下一個新訊號")
+                    if pos == net and BROKER.limit_wait:
+                        BROKER.limit_wait = None      # 已對齊（策略自己出場或已補到），不用再等漲跌停打開
                     if self._baseline_net is not None and net == self._baseline_net:
                         pass                        # 開機時就有的部位，照設定不追
                     elif BROKER.ready and not kill and not halted and not pending and pos != net:
