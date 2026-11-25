@@ -22,6 +22,11 @@
   .tabs{display:flex;gap:6px}
   .tabs button{padding:6px 12px;border-radius:999px;white-space:nowrap}
   .tabs button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+  @media (max-width:640px){
+    .top .in{flex-wrap:wrap;row-gap:8px;padding:8px 12px}
+    .tabs{order:3;flex-basis:100%}
+    .tabs button{flex:1;padding:7px 0;text-align:center}
+  }
   .lockpill{padding:5px 10px;font-size:12px;border-radius:999px;white-space:nowrap;color:var(--dim);background:transparent}
   .lockpill.on{color:var(--gold);border-color:var(--gold)}
   .lockpill.warn{color:var(--warn);border-color:var(--warn)}
