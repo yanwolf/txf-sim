@@ -131,6 +131,7 @@
   <div class="tabs">
     <button class="on" onclick="showPage('main',this)">監控</button>
     <button onclick="showPage('bt',this)">回測</button>
+    <button onclick="showPage('perf',this)">績效</button>
     <button onclick="showPage('cfg',this)">設定</button>
     <button onclick="location.href='/chart'">圖表</button>
   </div>
@@ -255,6 +256,14 @@
     <div class="card" id="bt-hist-card"><h3>回測紀錄比較</h3>
       <div class="desc">每次回測自動留一列（最近 40 列）。「參數」只列出和預設值不同的項目，金色＝有改動。<a href="#" onclick="clearHist();return false" style="color:var(--blue)">清除紀錄</a></div>
       <div id="bt-hist"></div></div>
+  </div>
+
+  <div id="page-perf" class="page">
+    <div class="card"><h3>實盤績效</h3>
+      <div class="desc">從 MultiCharts 移植到 txf-sim 正式下單以來的累積成績。<b>帳戶</b>＝券商實際成交（含滑價，未扣手續費、期交稅）；<b>策略</b>＝各策略正式上線期間的帳本（訊號價，同 MultiCharts 口徑，paper 期間不算）。</div>
+      <div class="row"><label>起算日 <input type="date" id="pf-start"></label><button onclick="loadPerf()">重新計算</button><span id="pf-msg" style="font-size:13px;color:var(--dim)"></span></div>
+    </div>
+    <div id="pf-out"></div>
   </div>
 
   <div id="page-cfg" class="page">
@@ -435,13 +444,13 @@ async function loadMargin(force){
 async function post(path,confirmMsg,body){
   if(AUTH.protected&&!AUTH.authed){
     alert('目前是唯讀狀態，操作前請先到「設定」分頁輸入密碼登入。');
-    showPage('cfg',document.querySelectorAll('.tabs button')[2]);
+    showPage('cfg',document.querySelectorAll('.tabs button')[3]);
     return;
   }
   if(confirmMsg&&!confirm(confirmMsg))return;
   try{
     const r=await fetch(path,{method:'POST',headers:hdr(),body:JSON.stringify(body||{})});
-    if(r.status===401){alert('需要先在「設定」分頁輸入密碼');showPage('cfg',document.querySelectorAll('.tabs button')[2]);return;}
+    if(r.status===401){alert('需要先在「設定」分頁輸入密碼');showPage('cfg',document.querySelectorAll('.tabs button')[3]);return;}
   }catch(e){alert('操作失敗：'+e);}
   tick();
 }
@@ -452,6 +461,7 @@ function showPage(p,btn){
   window.scrollTo(0,0);
   if(p==='cfg'){loadConfig();loadHolidays();}
   if(p==='bt'){initBT();histSummary();}
+  if(p==='perf')loadPerf();
 }
 async function login(){
   const r=await fetch('/api/login',{method:'POST',headers:hdr(),body:JSON.stringify({password:$('pw').value})});
@@ -470,7 +480,7 @@ function setLock(d){
 }
 function lockClick(){
   if(AUTH.protected&&AUTH.authed) logout();
-  else if(AUTH.protected) showPage('cfg',document.querySelectorAll('.tabs button')[2]);
+  else if(AUTH.protected) showPage('cfg',document.querySelectorAll('.tabs button')[3]);
 }
 async function refreshAuth(){
   const d=await fetch('/api/auth',{headers:hdr()}).then(r=>r.json()).catch(()=>null);
@@ -923,6 +933,58 @@ function groupBlock(g){
     groupTable('環境診斷：進場前 20 日平均日振幅（占指數 %）',g.by_vol)+
     groupTable('環境診斷：波動度 × 期間（看 2017～2023 的同一波動區間是否也賺）',g.by_vol_period)+
     groupTable('環境診斷：進場前 20 日漲跌 × 多空',g.by_trend_side);
+}
+const PF_COLORS=['#d4a73a','#7fb3ff','#b48cff','#4fd1c5','#f08a5d','#c7c7c7','#e07ab8'];
+function multiSVG(series,h=220){
+  // series:[{name,color,pts:[{t,eq}]}]，x 軸用時間
+  const all=series.flatMap(s=>s.pts); if(all.length<1)return '<div class="desc">尚無已平倉交易</div>';
+  const tt=x=>new Date(x.t.replace(' ','T')).getTime();
+  const t0=Math.min(...all.map(tt)),t1=Math.max(...all.map(tt)),w=680;
+  const vs=all.map(p=>p.eq),mn=Math.min(0,...vs),mx=Math.max(0,...vs),rg=(mx-mn)||1;
+  const X=t=>t1===t0?w/2:(t-t0)/(t1-t0)*w, Y=v=>h-8-(v-mn)/rg*(h-16);
+  const paths=series.map(s=>{if(!s.pts.length)return '';
+    const pts=[{t:new Date(t0).toISOString().slice(0,16).replace('T',' '),eq:0},...s.pts];
+    let d='';pts.forEach((p,i)=>{const x=X(tt(p)).toFixed(1),y=Y(p.eq).toFixed(1);d+=i?`H${x}V${y}`:`M${x},${y}`;});
+    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.w||1.6}"/>`;}).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px;display:block">
+    <line x1="0" y1="${Y(0).toFixed(1)}" x2="${w}" y2="${Y(0).toFixed(1)}" stroke="#2b2f3a"/>${paths}</svg>
+    <div style="display:flex;justify-content:space-between;color:var(--dim);font-size:11px"><span>${new Date(t0).toLocaleDateString('zh-TW')}</span><span>${new Date(t1).toLocaleDateString('zh-TW')}</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;margin-top:6px">${series.map(s=>`<span><span style="display:inline-block;width:14px;height:3px;background:${s.color};vertical-align:middle;margin-right:5px"></span>${s.name}</span>`).join('')}</div>`;
+}
+async function loadPerf(){
+  const st=$('pf-start').value; $('pf-msg').textContent='計算中…';
+  const r=await fetch('/api/perf'+(st?'?start='+st:''),{headers:hdr()}).then(x=>x.json()).catch(()=>null);
+  if(!r){$('pf-msg').textContent='讀取失敗';return;}
+  if(!st)$('pf-start').value=r.start;
+  $('pf-msg').textContent='';
+  const a=r.account, bpv=r.bpv, names=Object.keys(r.strategies);
+  const tile=(k,v,c='')=>`<div class="cell"><span class="k">${k}</span><span class="num ${c}" style="font-size:20px">${v}</span></div>`;
+  const strSeries=names.map((n,i)=>({name:n,color:PF_COLORS[i%PF_COLORS.length],pts:r.strategies[n].curve}));
+  const accSeries=[{name:'帳戶實際（成交價）',color:a.net_pts>=0?'#e5484d':'#2fb36b',pts:a.curve,w:2.4},
+                   {name:'策略帳本合計（訊號價）',color:'#8a8f9c',pts:ledgerSum(r.strategies)}];
+  $('pf-out').innerHTML=`
+    <div class="card"><h3>帳戶累積損益（自 ${r.start}）</h3>
+      <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-bottom:10px">
+        ${tile('已實現',M(a.net_pts,0)+' 點',cls(a.net_pts))}${tile('金額（每點 '+bpv+' 元）',M(a.net_ntd)+' 元',cls(a.net_pts))}
+        ${tile('平倉筆數',a.closes)}${tile('勝率',a.closes?(a.win*100/a.closes).toFixed(1)+'%':'—')}
+        ${tile('最大回撤',M(a.max_dd,0)+' 點',a.max_dd?'down':'')}${tile('目前部位',a.open_pos?(a.open_pos+' 口 @ '+M(a.open_avg,0)):'空手')}
+      </div>
+      ${multiSVG(accSeries)}
+      <div class="desc" style="margin-top:8px">策略帳本合計 ${M(r.ledger_total,0)} 點，帳戶實際 ${M(a.net_pts,0)} 點，差 <b class="${cls(r.slippage_gap)}">${M(r.slippage_gap,0)}</b> 點：主要是滑價，以及多策略同時進出時只下淨部位造成的差異。手續費與期交稅不在這裡，以券商對帳單為準。</div>
+    </div>
+    <div class="card"><h3>各策略正式上線績效</h3>
+      ${multiSVG(strSeries,200)}
+      <div class="scroll" style="margin-top:10px"><table><thead><tr><th style="text-align:left">策略</th><th>上線起</th><th>交易</th><th>淨點數</th><th>勝率</th><th>PF</th><th>最大回撤</th><th>目前</th></tr></thead><tbody>
+      ${names.map(n=>{const x=r.strategies[n];return `<tr class="num"><td style="text-align:left">${n}</td><td>${x.first||'—'}</td><td>${x.trades}</td><td class="${cls(x.net_pts)}">${M(x.net_pts,0)}</td><td>${x.win_rate}%</td><td>${x.pf??'—'}</td><td>${M(x.max_dd,0)}</td><td>${x.open?x.open.side+' @ '+M(x.open.price,0):'空手'}</td></tr>`;}).join('')}
+      </tbody></table></div>
+      <div class="desc" style="margin-top:6px">只算訊號標籤不含「·實驗」的進出場，所以策略從 paper 改成 live 之後才開始計入；改回 paper 之後的交易也不算。</div>
+    </div>
+    ${names.map(n=>{const x=r.strategies[n];if(!x.last.length)return '';return `<div class="card"><h3>${n} 最近交易</h3><div class="scroll"><table><thead><tr><th style="text-align:left">進場</th><th>方向</th><th>進</th><th>出</th><th>點數</th><th style="text-align:left">出場原因</th></tr></thead><tbody>
+      ${x.last.map(t=>`<tr class="num"><td style="text-align:left">${t.entry_t.slice(5,16)}</td><td>${t.d>0?'多':'空'}</td><td>${M(t.entry,0)}</td><td>${M(t.exit,0)}</td><td class="${cls(t.pts)}">${M(t.pts,0)}</td><td style="text-align:left">${t.exit_lab}</td></tr>`).join('')}</tbody></table></div></div>`;}).join('')}`;
+}
+function ledgerSum(S){
+  const ev=[];Object.values(S).forEach(s=>{let prev=0;s.curve.forEach(p=>{ev.push({t:p.t,d:p.eq-prev});prev=p.eq;});});
+  ev.sort((a,b)=>a.t<b.t?-1:1);let c=0;return ev.map(e=>({t:e.t,eq:Math.round((c+=e.d)*10)/10}));
 }
 function equitySVG(eq){
   if(!eq||eq.length<2)return '';

@@ -159,6 +159,12 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/bars":
             n = int(q.get("n", ["60"])[0])
             self._send(200, STATE.recent_bars(n))
+        elif u.path == "/api/perf":
+            from .perf import compute
+            from .state import STATE as _S
+            code = str(getattr(_S, "order_contract", "") or "TMF")
+            bpv = 10 if code.startswith("TMF") else 50 if code.startswith("MXF") else 200 if code.startswith("TXF") else 10
+            self._send(200, compute(q.get("start", [None])[0], bpv))
         elif u.path == "/api/signals":
             self._send(200, STATE.recent_signals())
         elif u.path == "/api/events":
