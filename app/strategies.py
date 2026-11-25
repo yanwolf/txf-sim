@@ -91,8 +91,24 @@ class ARCrossover2025(Strategy):
     minutes = 60
     doc = dict(MAN="最高價均線期數", ATRN="AvgRange 期數", ATRX="AvgRange 倍數", ETD="每日最多進場次數",
                TN="結算日幾點出場（HHMM）", LOSS="停損點數", WIN="停利點數", Twin="啟動移動停利的最大浮盈",
-               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）")
-    inputs = dict(MAN=20, ATRN=50, ATRX=1, ETD=2, TN=1245, LOSS=100, WIN=500, Twin=200, Tstop=200, TNw=430)
+               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）",
+               CONF="進場確認：0＝最高價上穿就進（原版），1＝收盤價也要站上進場軌", MA1="趨勢濾網快線期數（1＝收盤價）",
+               MA2="趨勢濾網慢線期數（0＝關閉；開啟時只在快線>慢線才做多）", CD="虧損出場後冷卻幾根 K 不進場（0＝關閉）")
+    # CONF／MA2／CD 是降雜訊用的開關，預設關閉＝與 MC 原版一致
+    inputs = dict(MAN=20, ATRN=50, ATRX=1, ETD=2, TN=1245, LOSS=100, WIN=500, Twin=200, Tstop=200, TNw=430,
+                  CONF=0, MA1=1, MA2=0, CD=0)
+
+    def _filters_ok(self, band0, up):
+        """降雜訊濾網；回 None 表示放行，否則回擋下的原因。"""
+        p = self.p
+        if int(p.get("CONF", 0)) and not (self.C() > band0 if up else self.C() < band0):
+            return "收盤未站上進場軌" if up else "收盤未跌破進場軌"
+        tr = _ma_trend(self, p.get("MA1", 1), p.get("MA2", 0))
+        if tr is not None and not (tr[0] > tr[1] if up else tr[0] < tr[1]):
+            return "趨勢濾網不成立"
+        if self.in_loss_cooldown(p.get("CD", 0)):
+            return f"虧損後冷卻中（{int(p['CD'])} 根）"
+        return None
 
     def on_bar(self):
         p = self.p
@@ -101,7 +117,7 @@ class ARCrossover2025(Strategy):
             (sum(self.H(k + 1) - self.L(k + 1) for k in range(int(p["ATRN"]))) / int(p["ATRN"])) * p["ATRX"]
         crosses_over = self.H(1) <= band1 and self.H() > band0
         # IF EntriesToday(D)<ETD and H crosses over ... then buy next bar market;
-        if self.entries_today < p["ETD"] and crosses_over:
+        if self.entries_today < p["ETD"] and crosses_over and self._filters_ok(band0, True) is None:
             self.buy_market("H 上穿 MA+AR")
 
         value90 = self.maxprofit_pts
@@ -123,7 +139,8 @@ class ARCrossover2025(Strategy):
         band = self.average(self.H, p["MAN"]) + self.avgrange(p["ATRN"]) * p["ATRX"]
         return {"最高價": self.H(), "前一根最高": self.H(1), f"MA(H,{int(p['MAN'])})": self.average(self.H, p["MAN"]),
                 f"AvgRange({int(p['ATRN'])})": self.avgrange(p["ATRN"]), "進場軌 MA+AR×ATRX": band,
-                "今日進場次數": self.entries_today, "結算日": self.checkday}
+                "今日進場次數": self.entries_today, "結算日": self.checkday,
+                "降雜訊濾網": self._filters_ok(band, True) or "放行"}
 
 
 class ARCrossunder2025(Strategy):
@@ -135,10 +152,14 @@ class ARCrossunder2025(Strategy):
     name = "AR_crossunder_2025"
     desc = "只做空。最低價下穿 MA(L)−AvgRange×倍數 市價放空，每日最多 ETD 次（AR_crossover 的鏡像）"
     minutes = 60
-    inputs = dict(MAN=15, ATRN=35, ATRX=0.1, ETD=2, TN=1245, LOSS=55, WIN=500, Twin=200, Tstop=100, TNw=330)
+    inputs = dict(MAN=15, ATRN=35, ATRX=0.1, ETD=2, TN=1245, LOSS=55, WIN=500, Twin=200, Tstop=100, TNw=330,
+                  CONF=0, MA1=1, MA2=0, CD=0)
     doc = dict(MAN="最低價均線期數", ATRN="AvgRange 期數", ATRX="AvgRange 倍數", ETD="每日最多進場次數",
                TN="結算日幾點出場（HHMM）", LOSS="停損點數", WIN="停利點數", Twin="啟動移動停利的最大浮盈",
-               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）")
+               Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）",
+               CONF="進場確認：0＝最低價下穿就進（原版），1＝收盤價也要跌破進場軌", MA1="趨勢濾網快線期數（1＝收盤價）",
+               MA2="趨勢濾網慢線期數（0＝關閉；開啟時只在快線<慢線才放空）", CD="虧損出場後冷卻幾根 K 不進場（0＝關閉）")
+    _filters_ok = ARCrossover2025._filters_ok
 
     def _band(self, shift=0):
         p = self.p
@@ -150,7 +171,7 @@ class ARCrossunder2025(Strategy):
         p = self.p
         crosses_under = self.L(1) >= self._band(1) and self.L() < self._band(0)
         # IF EntriesToday(D)<ETD and L crosses under MA(L)-AvgRange*ATRX then sellshort next bar market;
-        if self.entries_today < p["ETD"] and crosses_under:
+        if self.entries_today < p["ETD"] and crosses_under and self._filters_ok(self._band(0), False) is None:
             self.sellshort_market("L 下穿 MA−AR")
 
         value90 = self.maxprofit_pts

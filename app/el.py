@@ -73,6 +73,8 @@ class Strategy:
         self.realized_today = 0.0
         self.trades_today = 0
         self.last_signal = None
+        self.exit_n = None        # 上一次出場時的 K 棒數（len(bars)），給冷卻期用
+        self.exit_pnl = 0.0       # 上一次出場的損益（點）
         # 掛單
         self.orders = []          # 目前 K 棒有效的掛單
         self.exit_on_close = False
@@ -233,6 +235,13 @@ class Strategy:
     def setexitonclose(self): self.exit_on_close = True
 
     # ------------------------------------------------------------ 引擎呼叫
+    def in_loss_cooldown(self, bars_n):
+        """上一筆虧損出場後，還沒滿 bars_n 根 K → True（0 = 關閉）。"""
+        bars_n = int(bars_n or 0)
+        if bars_n <= 0 or self.exit_n is None or self.exit_pnl >= 0:
+            return False
+        return 0 <= len(self.bars) - self.exit_n < bars_n
+
     def on_bar(self):
         raise NotImplementedError
 
@@ -382,12 +391,14 @@ class Strategy:
             self.entryprice = None
             self.maxprofit_pts = 0.0
             self.last_signal = f"{action} @ {price:.0f} ({pnl:+.0f})"
+            self.exit_n, self.exit_pnl = len(self.bars), pnl
             return
         # 進場（若持反向部位，MC 會先平再開：這裡直接反手並記損益）
         if self.mp != 0 and self.entryprice is not None:
             pnl = (price - self.entryprice) * self.mp
             self.realized_today += pnl
             self.trades_today += 1
+            self.exit_n, self.exit_pnl = len(self.bars), pnl
         self.mp = 1 if action == "buy" else -1
         self.entryprice = price
         self.maxprofit_pts = 0.0
