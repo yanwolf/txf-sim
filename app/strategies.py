@@ -93,10 +93,22 @@ class ARCrossover2025(Strategy):
                TN="結算日幾點出場（HHMM）", LOSS="停損點數", WIN="停利點數", Twin="啟動移動停利的最大浮盈",
                Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）",
                CONF="進場確認：0＝最高價上穿就進（原版），1＝收盤價也要站上進場軌", MA1="趨勢濾網快線期數（1＝收盤價）",
-               MA2="趨勢濾網慢線期數（0＝關閉；開啟時只在快線>慢線才做多）", CD="虧損出場後冷卻幾根 K 不進場（0＝關閉）")
-    # CONF／MA2／CD 是降雜訊用的開關，預設關閉＝與 MC 原版一致
+               MA2="趨勢濾網慢線期數（0＝關閉；開啟時只在快線>慢線才做多）", CD="虧損出場後冷卻幾根 K 不進場（0＝關閉）",
+               LOSSX="停損改用 AvgRange(200) 倍數（0＝用固定點數 LOSS）", WINX="停利改用 AvgRange(200) 倍數（0＝用 WIN）",
+               TwinX="移動停利啟動改用 AvgRange(200) 倍數（0＝用 Twin）", TstopX="移動停利回吐改用 AvgRange(200) 倍數（0＝用 Tstop）")
+    # CONF／MA2／CD 是降雜訊用的開關；LOSSX 等是「出場距離隨波動縮放」的開關。預設全關＝與 MC 原版一致
     inputs = dict(MAN=20, ATRN=50, ATRX=1, ETD=2, TN=1245, LOSS=100, WIN=500, Twin=200, Tstop=200, TNw=430,
-                  CONF=0, MA1=1, MA2=0, CD=0)
+                  CONF=0, MA1=1, MA2=0, CD=0, LOSSX=0, WINX=0, TwinX=0, TstopX=0)
+
+    def _dist(self, key):
+        """出場距離（點）：key+X > 0 時用「進場當下 AvgRange(200) × 倍數」，否則用固定點數 × TICKSIZE。
+        AvgRange 在進場那根 K 收盤時凍結，持倉期間出場價不會跟著飄。"""
+        x = float(self.p.get(key + "X", 0) or 0)
+        if x > 0:
+            if self.mp != self.mp_prev or getattr(self, "_ar_x", None) is None:
+                self._ar_x = self.avgrange(200)
+            return self._ar_x * x
+        return self.p[key] * TICKSIZE
 
     def _filters_ok(self, band0, up):
         """降雜訊濾網；回 None 表示放行，否則回擋下的原因。"""
@@ -121,11 +133,13 @@ class ARCrossover2025(Strategy):
             self.buy_market("H 上穿 MA+AR")
 
         value90 = self.maxprofit_pts
+        if self.mp == 0:
+            self._ar_x = None
         if self.mp > 0:
-            self.sell_stop(self.entryprice - TICKSIZE * p["LOSS"], "停損")
-            self.sell_limit(self.entryprice + TICKSIZE * p["WIN"], "停利")
-            if value90 >= p["Twin"] * TICKSIZE:
-                self.sell_stop(self.entryprice + value90 - p["Tstop"] * TICKSIZE, "移動停利")
+            self.sell_stop(self.entryprice - self._dist("LOSS"), "停損")
+            self.sell_limit(self.entryprice + self._dist("WIN"), "停利")
+            if value90 >= self._dist("Twin"):
+                self.sell_stop(self.entryprice + value90 - self._dist("Tstop"), "移動停利")
 
         # IF CheckDay and T=TN then sell next bar at market;
         if self.checkday and self.T() == p["TN"]:
@@ -140,7 +154,9 @@ class ARCrossover2025(Strategy):
         return {"最高價": self.H(), "前一根最高": self.H(1), f"MA(H,{int(p['MAN'])})": self.average(self.H, p["MAN"]),
                 f"AvgRange({int(p['ATRN'])})": self.avgrange(p["ATRN"]), "進場軌 MA+AR×ATRX": band,
                 "今日進場次數": self.entries_today, "結算日": self.checkday,
-                "降雜訊濾網": self._filters_ok(band, True) or "放行"}
+                "降雜訊濾網": self._filters_ok(band, True) or "放行",
+                "AvgRange(200)": self.avgrange(200),
+                "出場距離（點）": {k: round(self._dist(k), 1) for k in ("LOSS", "WIN", "Twin", "Tstop")}}
 
 
 class ARCrossunder2025(Strategy):
@@ -153,13 +169,16 @@ class ARCrossunder2025(Strategy):
     desc = "只做空。最低價下穿 MA(L)−AvgRange×倍數 市價放空，每日最多 ETD 次（AR_crossover 的鏡像）"
     minutes = 60
     inputs = dict(MAN=15, ATRN=35, ATRX=0.1, ETD=2, TN=1245, LOSS=55, WIN=500, Twin=200, Tstop=100, TNw=330,
-                  CONF=0, MA1=1, MA2=0, CD=0)
+                  CONF=0, MA1=1, MA2=0, CD=0, LOSSX=0, WINX=0, TwinX=0, TstopX=0)
     doc = dict(MAN="最低價均線期數", ATRN="AvgRange 期數", ATRX="AvgRange 倍數", ETD="每日最多進場次數",
                TN="結算日幾點出場（HHMM）", LOSS="停損點數", WIN="停利點數", Twin="啟動移動停利的最大浮盈",
                Tstop="移動停利回吐點數", TNw="週六幾點後不留單（HHMM）",
                CONF="進場確認：0＝最低價下穿就進（原版），1＝收盤價也要跌破進場軌", MA1="趨勢濾網快線期數（1＝收盤價）",
-               MA2="趨勢濾網慢線期數（0＝關閉；開啟時只在快線<慢線才放空）", CD="虧損出場後冷卻幾根 K 不進場（0＝關閉）")
+               MA2="趨勢濾網慢線期數（0＝關閉；開啟時只在快線<慢線才放空）", CD="虧損出場後冷卻幾根 K 不進場（0＝關閉）",
+               LOSSX="停損改用 AvgRange(200) 倍數（0＝用固定點數 LOSS）", WINX="停利改用 AvgRange(200) 倍數（0＝用 WIN）",
+               TwinX="移動停利啟動改用 AvgRange(200) 倍數（0＝用 Twin）", TstopX="移動停利回吐改用 AvgRange(200) 倍數（0＝用 Tstop）")
     _filters_ok = ARCrossover2025._filters_ok
+    _dist = ARCrossover2025._dist
 
     def _band(self, shift=0):
         p = self.p
@@ -175,11 +194,13 @@ class ARCrossunder2025(Strategy):
             self.sellshort_market("L 下穿 MA−AR")
 
         value90 = self.maxprofit_pts
+        if self.mp == 0:
+            self._ar_x = None
         if self.mp < 0:
-            self.buytocover_stop(self.entryprice + TICKSIZE * p["LOSS"], "停損")
-            self.buytocover_limit(self.entryprice - TICKSIZE * p["WIN"], "停利")
-            if value90 >= p["Twin"] * TICKSIZE:
-                self.buytocover_stop(self.entryprice - value90 + p["Tstop"] * TICKSIZE, "移動停利")
+            self.buytocover_stop(self.entryprice + self._dist("LOSS"), "停損")
+            self.buytocover_limit(self.entryprice - self._dist("WIN"), "停利")
+            if value90 >= self._dist("Twin"):
+                self.buytocover_stop(self.entryprice - value90 + self._dist("Tstop"), "移動停利")
 
         if self.checkday and self.T() == p["TN"]:
             self.buytocover_market("結算日出場")
