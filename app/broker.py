@@ -88,6 +88,23 @@ def tf_session_of_now():
     return session_of(now().replace(tzinfo=None))
 
 
+def limit_day_of(dt):
+    """漲跌停價屬於哪個交易日：夜盤（15:00 後）歸下一個交易日、凌晨夜盤歸當天，與期交所一致。"""
+    from datetime import timedelta
+    from .state import is_holiday
+    d = dt.date()
+    if dt.hour >= 15:
+        d += timedelta(days=1)
+        while d.weekday() >= 5 or is_holiday(d):
+            d += timedelta(days=1)
+    return d.isoformat()
+
+
+def limit_day_loaded(dt):
+    """合約檔的漲跌停價可信任的交易日：只有 07:00~15:00 載入的才確定是當天的（凌晨、夜盤載入的可能還是舊的）。"""
+    return limit_day_of(dt) if 7 <= dt.hour < 15 else None
+
+
 class Broker:
     def __init__(self):
         self.lock = threading.RLock()
@@ -458,6 +475,23 @@ class Broker:
         self.persist()
 
     # ------------------------------------------------------------ 送單
+    @staticmethod
+    def trusted_limit(buy, c=None):
+        """合約檔的漲停（buy）／跌停價；不是今天交易日的、或價格已經超出（代表檔案是舊的）就不信任。"""
+        if c is None:
+            with STATE.lock:
+                c = dict(STATE.contract or {})
+        lim = c.get("limit_up") if buy else c.get("limit_down")
+        if not lim or c.get("limit_session") != limit_day_of(now().replace(tzinfo=None)):
+            return None
+        with STATE.lock:
+            hi, lo = STATE.day_high, STATE.day_low
+        # 實際成交不可能超出漲跌停：本盤高低點超出這組數字 → 檔案是舊的
+        if (c.get("limit_up") and hi is not None and hi > c["limit_up"]) or \
+           (c.get("limit_down") and lo is not None and lo < c["limit_down"]):
+            return None
+        return lim
+
     def _limit_locked(self, buy):
         """這個方向是否卡在漲跌停（買卡漲停、賣卡跌停）。回傳原因字串或 None。
         1) 合約檔漲跌停價（只在載入的同一個時段內才信任）
@@ -467,15 +501,13 @@ class Broker:
             hi, lo = STATE.day_high, STATE.day_low
         if px is None:
             return None
-        from .tf import session_of
-        cur = (session_of(now().replace(tzinfo=None)) or (None,))[0]
-        lim = c.get("limit_up") if buy else c.get("limit_down")
-        if lim and c.get("limit_session") == cur:
+        lim = self.trusted_limit(buy, c)
+        if lim:
             if (buy and px >= lim) or (not buy and px <= lim):
                 return f"{'漲' if buy else '跌'}停 {lim:.0f}"
             return None
         ext = hi if buy else lo
-        if ext is not None and px == ext:
+        if ext is not None and ((buy and px >= ext) or (not buy and px <= ext)):
             return f"價格停在本盤{'最高' if buy else '最低'} {px:.0f}（疑似{'漲' if buy else '跌'}停鎖住）"
         return None
 
@@ -484,8 +516,7 @@ class Broker:
             STATE.log("WARN", f"非交易時段或推定休市，不送單（{reason}）")
             return
         lk = self._limit_locked(delta > 0)
-        c = STATE.contract or {}
-        if lk and c.get("limit_session") == (tf_session_of_now() or (None,))[0]:
+        if lk and self.trusted_limit(delta > 0):
             # 確定鎖在漲跌停板：市價 IOC 一定被取消，先不送，部位對齊每 60 秒會再試，打開後自動補單
             if self.limit_wait != lk:
                 STATE.log("WARN", f"{lk}，暫不送單（{reason}）；打開後自動補單，不算委託失敗")

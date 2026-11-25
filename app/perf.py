@@ -63,9 +63,40 @@ def account_curve(start, bpv):
             "win": sum(1 for c in closes if c["pts"] > 0)}
 
 
+def _unfilled_index(start):
+    """live 委託（含重送）與「漲跌停暫不送單」事件，用來找帳本有進場、帳戶卻沒成交的交易。"""
+    from datetime import datetime
+    P = lambda t: datetime.strptime(t[:19], "%Y-%m-%d %H:%M:%S")
+    orders = [(P(t), reason or "", int(filled or 0) if status != "failed" else 0)
+              for t, reason, status, filled in _rows(
+                  "SELECT t, reason, status, filled_qty FROM orders WHERE mode = ? AND t >= ?", ("live", start))]
+    locks = [(P(t), msg or "") for t, msg in _rows(
+        "SELECT t, msg FROM events WHERE t >= ? AND (msg LIKE ? OR msg LIKE ?)",
+        (start, "%停%暫不送單%", "%停%委託未成交%"))]
+    return orders, locks
+
+
+def _mark_unfilled(trades, name, idx):
+    """進場前後 5 秒內，帶這支策略標籤的 live 委託全部 0 成交（含重送），或有漲跌停暫不送單 → 標成未成交。
+    多策略同時進場只下淨部位時，委託理由會用「＋」串起來，所以用「包含標籤」判斷。"""
+    from datetime import datetime
+    orders, locks = idx
+    tag = f"[{name}]"
+    for x in trades:
+        et = datetime.strptime(x["entry_t"][:19], "%Y-%m-%d %H:%M:%S")
+        near = lambda t: -2 <= (t - et).total_seconds() <= 5
+        if any(near(t) and tag in m for t, m in locks):
+            x["unfilled"] = "漲跌停"
+            continue
+        mine = [f for t, r, f in orders if near(t) and tag in r]
+        if mine and sum(mine) == 0:
+            x["unfilled"] = "委託未成交"
+
+
 def strategy_ledgers(start):
     """正式上線訊號 → 各策略逐筆交易（訊號價）。"""
     sigs = _rows("SELECT t, side, price, reason FROM signals WHERE t >= ? ORDER BY t, id", (start,))
+    idx = _unfilled_index(start)
     open_ = {}
     trades = {}
     for t, side, price, reason in sigs:
@@ -88,6 +119,8 @@ def strategy_ledgers(start):
     out = {}
     for name in sorted(set(trades) | set(open_)):
         ts = trades.get(name, [])
+        _mark_unfilled(ts, name, idx)
+        uf = [x for x in ts if x.get("unfilled")]
         cum, curve = 0.0, []
         for x in ts:
             cum += x["pts"]
@@ -101,6 +134,8 @@ def strategy_ledgers(start):
                      "max_dd": _mdd([c["eq"] for c in curve]),
                      "first": ts[0]["entry_t"][:10] if ts else (o["t"][:10] if o else None),
                      "open": ({"side": "多" if o["d"] > 0 else "空", "t": o["t"][:16], "price": o["p"]} if o else None),
+                     "unfilled_n": len(uf), "unfilled_pts": round(sum(x["pts"] for x in uf), 1),
+                     "unfilled": [x for x in uf][::-1],
                      "curve": curve, "last": ts[-8:][::-1]}
     return out
 
@@ -124,5 +159,8 @@ def compute(start=None, bpv=10):
     acc["max_dd"] = _mdd([c["eq"] for c in acc["curve"]])
     strats = strategy_ledgers(start)
     ledger_total = round(sum(s["net_pts"] for s in strats.values()), 1)
+    uf_n = sum(s["unfilled_n"] for s in strats.values())
+    uf_pts = round(sum(s["unfilled_pts"] for s in strats.values()), 1)
     return {"start": start, "bpv": bpv, "account": acc, "strategies": strats, "ledger_total": ledger_total,
+            "unfilled_n": uf_n, "unfilled_pts": uf_pts,
             "slippage_gap": round(acc["net_pts"] - ledger_total, 1)}

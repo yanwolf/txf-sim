@@ -975,17 +975,19 @@ async function loadPerf(){
         ${tile('最大回撤',M(a.max_dd,0)+' 點',a.max_dd?'down':'')}${tile('目前部位',a.open_pos?(a.open_pos+' 口 @ '+M(a.open_avg,0)):'空手')}
       </div>
       ${multiSVG(accSeries)}
-      <div class="desc" style="margin-top:8px">策略帳本合計 ${M(r.ledger_total,0)} 點，帳戶實際 ${M(a.net_pts,0)} 點，差 <b class="${cls(r.slippage_gap)}">${M(r.slippage_gap,0)}</b> 點：主要是滑價，以及多策略同時進出時只下淨部位造成的差異。手續費與期交稅不在這裡，以券商對帳單為準。</div>
+      <div class="desc" style="margin-top:8px">策略帳本合計 ${M(r.ledger_total,0)} 點，帳戶實際 ${M(a.net_pts,0)} 點，差 <b class="${cls(r.slippage_gap)}">${M(r.slippage_gap,0)}</b> 點：主要是滑價${r.unfilled_n?`；其中 <b class="st-warn">${r.unfilled_n} 筆進場帳戶沒成交（漲跌停鎖死／委託被取消）</b>，帳本記了 ${M(r.unfilled_pts,0)} 點、帳戶沒有`:''}。手續費與期交稅不在這裡，以券商對帳單為準。</div>
+      ${r.unfilled_n?`<div class="scroll" style="margin-top:8px"><table><thead><tr><th style="text-align:left">策略</th><th style="text-align:left">進場</th><th>方向</th><th>帳本點數</th><th style="text-align:left">原因</th></tr></thead><tbody>
+        ${names.flatMap(n=>r.strategies[n].unfilled.map(t=>`<tr class="num"><td style="text-align:left">${n}</td><td style="text-align:left">${t.entry_t.slice(5,16)}</td><td>${t.d>0?'多':'空'}</td><td class="${cls(t.pts)}">${M(t.pts,0)}</td><td style="text-align:left" class="st-warn">${t.unfilled}</td></tr>`)).join('')}</tbody></table></div>`:''}
     </div>
     <div class="card"><h3>各策略正式上線績效</h3>
       ${multiSVG(strSeries,200)}
-      <div class="scroll" style="margin-top:10px"><table><thead><tr><th style="text-align:left">策略</th><th>上線起</th><th>交易</th><th>淨點數</th><th>勝率</th><th>PF</th><th>最大回撤</th><th>目前</th></tr></thead><tbody>
-      ${names.map(n=>{const x=r.strategies[n];return `<tr class="num"><td style="text-align:left">${n}</td><td>${x.first||'—'}</td><td>${x.trades}</td><td class="${cls(x.net_pts)}">${M(x.net_pts,0)}</td><td>${x.win_rate}%</td><td>${x.pf??'—'}</td><td>${M(x.max_dd,0)}</td><td>${x.open?x.open.side+' @ '+M(x.open.price,0):'空手'}</td></tr>`;}).join('')}
+      <div class="scroll" style="margin-top:10px"><table><thead><tr><th style="text-align:left">策略</th><th>上線起</th><th>交易</th><th>淨點數</th><th>勝率</th><th>PF</th><th>最大回撤</th><th>未成交</th><th>目前</th></tr></thead><tbody>
+      ${names.map(n=>{const x=r.strategies[n];return `<tr class="num"><td style="text-align:left">${n}</td><td>${x.first||'—'}</td><td>${x.trades}</td><td class="${cls(x.net_pts)}">${M(x.net_pts,0)}</td><td>${x.win_rate}%</td><td>${x.pf??'—'}</td><td>${M(x.max_dd,0)}</td><td class="${x.unfilled_n?'st-warn':''}">${x.unfilled_n?x.unfilled_n+' 筆':'—'}</td><td>${x.open?x.open.side+' @ '+M(x.open.price,0):'空手'}</td></tr>`;}).join('')}
       </tbody></table></div>
       <div class="desc" style="margin-top:6px">只算訊號標籤不含「·實驗」的進出場，所以策略從 paper 改成 live 之後才開始計入；改回 paper 之後的交易也不算。</div>
     </div>
     ${names.map(n=>{const x=r.strategies[n];if(!x.last.length)return '';return `<div class="card"><h3>${n} 最近交易</h3><div class="scroll"><table><thead><tr><th style="text-align:left">進場</th><th>方向</th><th>進</th><th>出</th><th>點數</th><th style="text-align:left">出場原因</th></tr></thead><tbody>
-      ${x.last.map(t=>`<tr class="num"><td style="text-align:left">${t.entry_t.slice(5,16)}</td><td>${t.d>0?'多':'空'}</td><td>${M(t.entry,0)}</td><td>${M(t.exit,0)}</td><td class="${cls(t.pts)}">${M(t.pts,0)}</td><td style="text-align:left">${t.exit_lab}</td></tr>`).join('')}</tbody></table></div></div>`;}).join('')}`;
+      ${x.last.map(t=>`<tr class="num"><td style="text-align:left">${t.entry_t.slice(5,16)}</td><td>${t.d>0?'多':'空'}</td><td>${M(t.entry,0)}</td><td>${M(t.exit,0)}</td><td class="${cls(t.pts)}">${M(t.pts,0)}</td><td style="text-align:left">${t.exit_lab}${t.unfilled?` <span class="st-warn">⚠ 帳戶未成交</span>`:''}</td></tr>`).join('')}</tbody></table></div></div>`;}).join('')}`;
 }
 function ledgerSum(S){
   const ev=[];Object.values(S).forEach(s=>{let prev=0;s.curve.forEach(p=>{ev.push({t:p.t,d:p.eq-prev});prev=p.eq;});});

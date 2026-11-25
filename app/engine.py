@@ -9,7 +9,7 @@ import shioaji as sj
 
 from .portfolio import PORTFOLIO
 from .tf import session_of as tf_session_of, parse_ts as _parse_ts
-from .broker import BROKER, MODE
+from .broker import BROKER, MODE, limit_day_loaded
 from .db import DB_
 from .notify import notify
 from .state import STATE, TZ, in_session, now, session_remaining_min, session_dead, is_holiday
@@ -23,6 +23,7 @@ DATA_ROLL_TIME = int(os.getenv("DATA_ROLL_TIME", "1330"))     # 結算日當天�
 SIMULATION = os.getenv("SIMULATION", "true").lower() != "false"
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "45"))
 STALE_SECONDS = int(os.getenv("STALE_SECONDS", "180"))
+LOCK_STALE_SECONDS = int(os.getenv("LOCK_STALE_SECONDS", "1200"))   # 漲跌停鎖住時，沒有 tick 多久才當成斷線
 MIN_RELOGIN_GAP = 300  # 秒。避免重連風暴撞到每日登入次數上限
 PRE_OPEN_RELOGIN = [(835, 844), (1450, 1459)]   # 開盤前例行換新登入的時間窗（HHMM）
 PRE_OPEN_MIN_AGE = 4 * 3600                      # 距上次登入超過幾秒才換新
@@ -50,6 +51,7 @@ class Engine:
         self._last_relogin = 0.0
         self._login_ts = 0.0
         self._empty_retry_session = None   # 已為「整段無成交」重連過一次的時段
+        self._lock_quiet = None            # 漲跌停鎖住、暫停斷線重連的原因（只記一次 log）
         self._data_code = None             # 行情實際訂閱的月合約代碼
         self._usage_fail = 0
         self._legacy = False
@@ -297,8 +299,8 @@ class Engine:
                     "reference": num(g("reference")),
                     "limit_up": num(g("limit_up")),
                     "limit_down": num(g("limit_down")),
-                    # 漲跌停價屬於哪個時段：換到下一個時段（夜盤歸下一交易日）就不再信任這組數字
-                    "limit_session": (tf_session_of(now().replace(tzinfo=None)) or (None,))[0],
+                    # 漲跌停價屬於哪個交易日（夜盤歸下一交易日）；只信 07:00~15:00 載入的，凌晨／夜盤載入的可能是舊檔
+                    "limit_session": limit_day_loaded(now().replace(tzinfo=None)),
                 }
                 if STATE.contract["reference"]:
                     n_ = now()
@@ -552,6 +554,22 @@ class Engine:
         ses = tf_session_of(n.replace(tzinfo=None))
         cur = ses[0] if ses else None
         if STATE.last_tick_session == cur:
+            # 漲跌停鎖死時本來就幾乎沒有成交：最後價停在漲跌停板 → 不是斷線，拉長到 LOCK_STALE_SECONDS 才重連
+            # 只信合約檔的漲跌停價（同一時段）；「停在本盤最高/最低」這種推定不拿來延後重連，以免真斷線被拖久
+            with STATE.lock:
+                px = STATE.last_price
+            lk = None
+            up, dn = BROKER.trusted_limit(True), BROKER.trusted_limit(False)
+            if px is not None and up and px >= up:
+                lk = f"漲停 {up:.0f}"
+            elif px is not None and dn and px <= dn:
+                lk = f"跌停 {dn:.0f}"
+            if lk and time.time() - ref < LOCK_STALE_SECONDS:
+                if self._lock_quiet != lk:
+                    self._lock_quiet = lk
+                    STATE.log("INFO", f"{lk}，沒有 tick 屬正常（鎖住），暫不重新連線；超過 {LOCK_STALE_SECONDS // 60} 分鐘仍無 tick 才重連")
+                return
+            self._lock_quiet = None
             # 本時段有過成交、後來斷掉 → 真的斷線，持續重連
             STATE.log("WARN", f"盤中 {STALE_SECONDS} 秒沒有 tick，重新連線")
             notify(f"⚠️ 盤中 {STALE_SECONDS} 秒沒有 tick，重新連線", key="stale", cooldown=600)
