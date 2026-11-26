@@ -333,7 +333,13 @@ class Handler(BaseHTTPRequestHandler):
             per = MARGIN_TABLE.per_lot(code)
             snap = MARGIN_TABLE.snapshot()
             m = BROKER.margin
-            self._send(200, {"locked": False, "margin": m, "table": snap,
+            try:
+                from .risk import assess
+                prod = MARGIN_TABLE.product(code)
+                risk = assess(m, per, prod["maintenance"] if prod else None, code)
+            except Exception as e:
+                risk = {"error": f"{e!r}"[:200]}
+            self._send(200, {"locked": False, "margin": m, "table": snap, "risk": risk,
                              "order_code": code, "per_lot": per,
                              "per_lot_source": "manual" if snap["manual_per_lot"] else "taifex",
                              "lots_affordable": int(m["available_margin"] // per) if (m and per) else None,

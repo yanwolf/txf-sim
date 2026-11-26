@@ -86,6 +86,7 @@ class TMFF(Strategy):
 
 class ARCrossover2025(Strategy):
     """sb_b21AR_crossover_2025：只做多。H 上穿 MA(H)+AvgRange*ATRX 市價進場。"""
+    sides = "long"
     name = "AR_crossover_2025"
     desc = "只做多。最高價上穿 MA(H)+AvgRange×倍數 市價進場，每日最多 ETD 次"
     minutes = 60
@@ -165,6 +166,7 @@ class ARCrossunder2025(Strategy):
     與多方版完全對稱：進場條件、停損、停利、移動停利、結算日與週末出場都反向。
     台股長期偏多，空方鏡像的期望值通常低於多方，建議先用 paper 模式累積樣本再決定。
     """
+    sides = "short"
     name = "AR_crossunder_2025"
     desc = "只做空。最低價下穿 MA(L)−AvgRange×倍數 市價放空，每日最多 ETD 次（AR_crossover 的鏡像）"
     minutes = 60
@@ -233,6 +235,7 @@ def _trend_debug(st, p, up):
 
 class GuYuan2024(Strategy):
     """sb_b21GuYuan_2024：只做多。週高/時段收/區間中值合成價，N 根最高 stop 進場，N 根最低 stop 出場。"""
+    sides = "long"
     name = "GuYuan_2024"
     desc = "只做多。(週高+時段收+區間中值)/3 合成價位，H 站上 → N 根最高 stop 進場；L 跌破 → N 根最低 stop 出場"
     minutes = 60
@@ -286,6 +289,7 @@ class GuYuan2024(Strategy):
 
 class GuYuan2025(Strategy):
     """sb_b21GuYuan_2025：只做多。20 分 K，加均線多頭排列與每日進場次數限制。"""
+    sides = "long"
     name = "GuYuan_2025"
     desc = "只做多。合成價位 + 均線多頭排列（MA1>MA2），N 根最高 stop 進場，每日最多 ETD 次"
     minutes = 20
@@ -332,6 +336,7 @@ class GuYuan2024Short(Strategy):
     與多方版完全對稱：進場用 value2（週低版合成價）、出場用 value1（週高版合成價），停損、停利、移動停利、
     結算日與週末出場都反向。台股長期偏多，空方鏡像的期望值通常低於多方，建議先用 paper 模式累積樣本再決定。
     """
+    sides = "short"
     name = "GuYuan_2024_S"
     desc = "只做空。(週低+時段收+區間中值)/3 合成價位，L 跌破 → N 根最低 stop 放空；H 站上 → N 根最高 stop 回補（GuYuan_2024 的鏡像）"
     minutes = 60
@@ -386,6 +391,7 @@ class GuYuan2024Short(Strategy):
 
 class GuYuan2025Short(Strategy):
     """GuYuan_2025 的空方鏡像：20 分 K，週低版合成價 + 均線空頭排列（MA1<MA2），N 根最低 stop 放空。"""
+    sides = "short"
     name = "GuYuan_2025_S"
     desc = "只做空。週低版合成價位 + 均線空頭排列（MA1<MA2），N 根最低 stop 放空，每日最多 ETD 次（GuYuan_2025 的鏡像）"
     minutes = 20

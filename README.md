@@ -76,6 +76,7 @@ DB 裡的設定優先於 `strategy_config.json`。設 `DASHBOARD_PASSWORD` 後�
 - 儀表板按鈕：Kill switch / 全部平倉 / 恢復 / 立即對帳
 - 保證金：盤中每 5 分鐘查帳戶保證金（`api.margin`）；另外每 `MARGIN_TABLE_REFRESH_MIN` 分鐘抓期交所 OpenAPI 的每口原始／維持保證金，存進 DB，數字變動就推播並記在儀表板「最近調整」。期交所 API 只給目前生效的數字，尚未生效的公告看不到
 - 下單前保證金檢查（`MARGIN_CHECK`）：開倉口數 × 每口原始保證金 ×（1 + `MARGIN_BUFFER_PCT`%）大於可用保證金（同張單先平掉的口數會算回來）就不送單並通知，不計入委託失敗；策略帳上仍視為進場，出場訊號時帳戶本來就沒部位，不會多送單。券商收得比期交所高時用 `MARGIN_PER_LOT` 指定
+- 風控提示（`app/risk.py`）：監控頁保證金卡片下方顯示「回撤緩衝倍數」＝（權益 − 同方向最大口數 × 每口原始保證金）÷（最大回撤點數 × 每點價值）。同方向口數依正式上線策略的 `sides`（多空／只做多／只做空）加總；最大回撤取實際帳戶成交、`RISK_MDD_PTS`、`RISK_MDD_MIN_PTS` 三者最大。≥3 倍安全、2~3 注意、1~2 偏高、<1 危險；等級變差到偏高／危險時推 Telegram（`RISK_ALERT=off` 關閉）。只是提示，不會擋單
 
 **Telegram**：填 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`，推播訊號、成交、委託失敗、斷線重連、對帳不一致、kill。
 
