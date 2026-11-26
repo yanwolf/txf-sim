@@ -55,6 +55,7 @@ class Strategy:
     minutes = 60
     lots = 1
     inputs = {}
+    sides = "both"      # 可能的持倉方向：both / long（只做多）/ short（只做空），風控估同方向最大口數用
 
     def __init__(self, cfg):
         self.minutes = int(cfg.get("minutes", self.minutes))
