@@ -365,11 +365,6 @@ class Broker:
                 STATE.log("WARN", f"可用保證金 {self.margin['available_margin']:,.0f} 元，低於警示 {MARGIN_ALERT_AVAILABLE:,.0f}")
                 notify(f"⚠️ 可用保證金 {self.margin['available_margin']:,.0f} 元，低於警示門檻 {MARGIN_ALERT_AVAILABLE:,.0f}",
                        key="margin_low", cooldown=3600)
-            try:
-                from .risk import check_alert
-                check_alert(self.margin)
-            except Exception as e:
-                STATE.log("WARN", f"風控檢查失敗：{e!r}")
         except Exception as e:
             if session_dead(e):
                 STATE.need_relogin = STATE.need_relogin or "保證金查詢回報憑證過期／連線未建立"

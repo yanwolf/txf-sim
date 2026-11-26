@@ -700,7 +700,7 @@ def _scan_setup(params, cfg):
     grid_in = params.get("grid") or {}
     keys, lists = [], []
     for k, spec in grid_in.items():
-        if k not in cls.inputs:
+        if k != "_MIN" and k not in cls.inputs:
             raise ValueError(f"{name} 沒有參數 {k}")
         vals = _scan_values(spec)
         if vals:
@@ -716,7 +716,13 @@ def _scan_setup(params, cfg):
     strats = []
     for i, combo in enumerate(combos):
         c = dict(base)
-        c["inputs"] = {**base_inputs, **dict(zip(keys, combo))}
+        kv = dict(zip(keys, combo))
+        if "_MIN" in kv:                     # K 棒週期也能掃：_MIN＝幾分 K（不同週期在同一次重播裡各自組 K）
+            m = int(kv.pop("_MIN"))
+            if not 1 <= m <= 300:
+                raise ValueError(f"_MIN={m} 不是有效的 K 棒分鐘數")
+            c["minutes"] = m
+        c["inputs"] = {**base_inputs, **kv}
         c["enabled"] = True
         s = cls(c)
         s.name = f"{name}#{i}"
