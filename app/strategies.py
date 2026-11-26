@@ -156,7 +156,7 @@ class ARCrossover2025(Strategy):
                 "今日進場次數": self.entries_today, "結算日": self.checkday,
                 "降雜訊濾網": self._filters_ok(band, True) or "放行",
                 "AvgRange(200)": self.avgrange(200),
-                "出場距離（點）": {k: round(self._dist(k), 1) for k in ("LOSS", "WIN", "Twin", "Tstop")}}
+                "出場距離（點）": "　".join(f"{k} {self._dist(k):.0f}" for k in ("LOSS", "WIN", "Twin", "Tstop"))}
 
 
 class ARCrossunder2025(Strategy):
