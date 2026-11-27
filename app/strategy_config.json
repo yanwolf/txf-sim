@@ -135,6 +135,25 @@
       "TNw": 430
     }
   },
+  "GuYuan_2025_60": {
+    "enabled": true,
+    "mode": "paper",
+    "minutes": 60,
+    "lots": 1,
+    "inputs": {
+      "HN": 30,
+      "N1": 0,
+      "N2": 3,
+      "N3": 50,
+      "MA1": 15,
+      "MA2": 175,
+      "ETD": 5,
+      "TN": 1325,
+      "LOSS": 100,
+      "WIN": 450,
+      "TNw": 430
+    }
+  },
   "GuYuan_2025_S": {
     "enabled": false,
     "mode": "paper",

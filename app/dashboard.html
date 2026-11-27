@@ -813,6 +813,31 @@ function scImpact(r){
   }
   return out;
 }
+function scPick(r){
+  // 建議組合：用「平台分數」挑——自己＋格點上相鄰（只差一個參數一格）的組合，取淨點數中位數，孤峰會被拉低。
+  // 有樣本外起日時只看樣本內（樣本外留著驗證）；沒有就看全期。另外標出落在掃描邊緣、獲利集中在樣本外的情況。
+  const keys=r.params.keys, split=!!r.params.split, net=x=>split?(x.is||{}).net_pts||0:x.all.net_pts;
+  const vals=keys.map(k=>[...new Set(r.rows.map(x=>Number(x.params[k])))].sort((a,b)=>a-b));
+  const pos=new Map(r.rows.map(x=>[keys.map(k=>Number(x.params[k])).join('|'),x]));
+  const med=a=>{const b=[...a].sort((x,y)=>x-y),m=b.length>>1; return b.length%2?b[m]:(b[m-1]+b[m])/2;};
+  let best=null;
+  for(const x of r.rows){
+    const key=keys.map(k=>Number(x.params[k])), grp=[net(x)];
+    let miss=0;   // 落在掃描邊緣、少掉的鄰居：用這組裡最差的值補（保守），不然邊緣的點鄰居少、中位數會偏高
+    keys.forEach((k,n)=>{const j=vals[n].indexOf(key[n]);
+      for(const jj of [j-1,j+1]){
+        if(jj<0||jj>=vals[n].length){if(vals[n].length>1)miss++; continue;}
+        const kk=[...key]; kk[n]=vals[n][jj]; const nb=pos.get(kk.join('|')); if(nb)grp.push(net(nb));}});
+    const lo=Math.min(...grp); for(let q=0;q<miss;q++)grp.push(lo);
+    const sc=med(grp);
+    if(!best||sc>best.score||(sc===best.score&&net(x)>net(best.row)))best={row:x,score:sc};
+  }
+  if(!best)return null;
+  const x=best.row;
+  best.edge=keys.filter((k,n)=>vals[n].length>2&&(Number(x.params[k])===vals[n][0]||Number(x.params[k])===vals[n][vals[n].length-1]));
+  if(split){const o=(x.oos||{}).net_pts||0,a=x.all.net_pts; best.oosNeg=o<=0; best.oosHeavy=a>0&&o/a>0.7;}
+  return best;
+}
 function renderScan(r){
   LASTSCAN=r;
   const p=r.params, keys=p.keys, split=!!p.split;
@@ -832,6 +857,7 @@ function renderScan(r){
   const uniq=new Set(r.rows.map(scSig)).size;
   const uwin=new Set(r.rows.filter(x=>x.all.net_pts>0).map(scSig)).size;
   const best=[...r.rows].sort((a,b)=>b.all.net_pts-a.all.net_pts)[0];
+  const pick=scPick(r);
   const yr=x=>Object.entries(x.years).map(([y,v])=>`${y}: ${v}`).join('\n');
   const imp=scImpact(r);
   const impTxt=keys.map(k=>{const m=imp[k]; if(!m)return `${k}：只有一個值`;
@@ -841,7 +867,12 @@ function renderScan(r){
   $('bt-out').innerHTML=`<div class="card"><h3>參數掃描：${p.strategy}</h3>
     <div class="desc">${p.run_at||''} 執行　·　${srcName(p.source)}　·　${st} ~ ${en}　·　${M(p.bars)} 根 1 分 K　·　${p.contract}　·　單邊成本 ${p.cost_pts} 點${p.cost_bps?' ＋ '+p.cost_bps+' bps':''}${split?`　·　樣本外自 <b>${p.split}</b>`:''}</div>
     ${badSplit?`<div class="st-warn" style="font-size:13px;margin:6px 0">⚠️ 樣本外起日 ${p.split} 不在回測區間（${st} ~ ${en}）內，樣本內／樣本外有一邊是空的，這次的拆分沒有意義</div>`:''}
-    <div class="acc" style="padding:8px 12px;margin:8px 0">共 ${p.combos} 組，其中結果不同的有 <b>${uniq}</b> 種，賺錢 ${uwin} 種（${(uwin/uniq*100).toFixed(0)}%）。最佳：${keys.map(k=>k+'='+best.params[k]).join('、')}，${M(best.all.net_pts,1)} 點。<span class="st-gold">金色列</span>＝目前設定值。<br>
+    <div class="acc" style="padding:8px 12px;margin:8px 0">共 ${p.combos} 組，其中結果不同的有 <b>${uniq}</b> 種，賺錢 ${uwin} 種（${(uwin/uniq*100).toFixed(0)}%）。${pick?`<b>建議</b>：${keys.map(k=>k+'='+pick.row.params[k]).join('、')}（平台分數 ${M(pick.score,0)}；${split?`樣本內 ${M(pick.row.is.net_pts,0)}、樣本外 ${M(pick.row.oos.net_pts,0)}、`:''}全期 ${M(pick.row.all.net_pts,0)} 點）
+    ${pick.edge.length?`<br><span class="st-warn">⚠ ${pick.edge.join('、')} 落在掃描範圍邊緣，最佳值可能在範圍外，建議往外再掃一格</span>`:''}
+    ${pick.oosNeg?`<br><span class="st-warn">⚠ 這組樣本外沒賺錢，樣本內的好成績沒有延續</span>`:''}
+    ${pick.oosHeavy?`<br><span class="st-warn">⚠ 七成以上獲利來自樣本外，樣本內表現普通，可能只是近期行情剛好適合</span>`:''}<br>`:''}
+    全期淨點數最高：${keys.map(k=>k+'='+best.params[k]).join('、')}，${M(best.all.net_pts,1)} 點（只是排序，不代表最好）。<span class="st-gold">金色列</span>＝目前設定值。<br>
+    「建議」的挑法：每組跟格點上相鄰的組合一起取${split?'樣本內':'全期'}淨點數中位數（平台分數），挑最高的，避開孤峰${split?'；樣本外不參與挑選，留著驗證':''}。<br>
     參數影響度（固定其他參數、只動這一個時，淨點數差多少）：${impTxt}<br>
     「鄰近最差」＝格點上只差一格的組合中，淨點數最差的那個；數字高代表參數附近都穩，不是孤峰。滑過「淨點數」可看逐年。</div>
     <div class="row"><label><input type="checkbox" ${SCMERGE?'checked':''} onchange="SCMERGE=this.checked;renderScan(LASTSCAN)"> 合併結果完全相同的組合</label><button onclick="scDownload('csv')">下載 CSV</button><button onclick="scDownload('json')">下載 JSON</button></div>

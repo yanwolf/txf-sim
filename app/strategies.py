@@ -441,6 +441,17 @@ class TMFF_N40(TMFF):
     desc = "TMFF 的 paper 分身（N=40），跟 live 的 TMFF（N=30）並行比較用；邏輯與 TMFF 完全相同"
 
 
+class GuYuan2025_60(GuYuan2025):
+    """GuYuan_2025 的 paper 分身：邏輯完全相同，改 60 分 K 與重新掃描的參數，跟 20 分 K 的 GuYuan_2025 並行比較。
+    2026-11 掃描（2020 起、樣本外自 2025-05-01、成本 1.5 點＋1.5 bps）：
+      週期 45~90 分是平台、60 最好（20 分 K 是孤峰）；60 分 K 上 HN30／MA15／MA175 在平台中間；
+      出場 75~100 × 325~450 是平台，選 LOSS 100／WIN 450：樣本內 +5,812、樣本外 +8,722、每年都賺。"""
+    name = "GuYuan_2025_60"
+    desc = "GuYuan_2025 的 paper 分身（60 分 K、HN30、MA15/175、停損 100／停利 450），跟 20 分 K 版並行比較用"
+    minutes = 60
+    inputs = dict(GuYuan2025.inputs, HN=30, N1=0, N2=3, N3=50, MA1=15, MA2=175, ETD=5, TN=1325, LOSS=100, WIN=450, TNw=430)
+
+
 # ⚠️ 指標參數（LADDER/OPENRULE/OPENVOL/AVL_RESET/MA1/MA2）已校準鎖定，見 ORBIT_HANDOFF.md；改進請加新參數，預設維持現行行為
 class GapTracker:
     """日 K 奇襲缺口追蹤（v3 Orbit_gap 與 v1 的 USE_GAP 濾網共用，不要各寫一份）。
@@ -867,7 +878,7 @@ class DemoMA(Strategy):
 
 REGISTRY = {c.name: c for c in (TMFF, ARCrossover2025, ARCrossunder2025, GuYuan2024, GuYuan2025,
                                   GuYuan2024Short, GuYuan2025Short,
-                                  TMFF_N40,
+                                  TMFF_N40, GuYuan2025_60,
                                   OrbitCost30, OrbitGap, DemoMA)}
 
 # 進場 K 災難停損（EBX）是 el.Strategy 的共用機制：每支策略都加這個參數，預設 0＝關閉、行為與 MC 一致。
